@@ -79,7 +79,7 @@ pub fn sync_serve(
     )
 }
 
-/// The near half: spawns `sima sync-serve` on the destination and searches one
+/// The near half: spawns `sima sync-serve` on the destination and runs one
 /// session against it.
 ///
 /// One function serves both directions. The caller chooses the scope — a push
@@ -111,7 +111,7 @@ pub(crate) fn sync_over(
 /// network.
 #[derive(Debug, Clone)]
 pub(crate) enum Reach {
-    /// Over ssh at this destination; the far side's own `sima` searches the verb.
+    /// Over ssh at this destination; the far side's own `sima` runs the verb.
     Ssh {
         /// Where the command lands.
         destination: SshDestination,
@@ -157,7 +157,7 @@ impl Reach {
         self.verb_argv(&["follow-serve", far_config, "--once"])
     }
 
-    /// The argv that searches a shell on the far side, reading its script from
+    /// The argv that runs a shell on the far side, reading its script from
     /// stdin.
     ///
     /// Feeding the script over stdin is what keeps the far-side operations free
@@ -192,7 +192,7 @@ impl Reach {
         }
     }
 
-    /// The argv that searches `sima <args…>` on the destination.
+    /// The argv that runs `sima <args…>` on the destination.
     pub(crate) fn verb_argv(&self, args: &[&str]) -> Vec<String> {
         let mut argv = match self {
             Reach::Ssh {
@@ -282,7 +282,7 @@ mod tests {
     }
 
     #[test]
-    fn the_sync_verb_addresses_a_store_and_a_run_rather_than_a_config() {
+    fn the_sync_verb_addresses_a_store_and_a_search_rather_than_a_config() {
         // Loading a config on the far side resolves its `[domain.*]` entries,
         // which spawns the program a session may be there to deliver. The two
         // values a config would have given travel instead.
@@ -342,7 +342,7 @@ mod tests {
     }
 
     #[test]
-    fn a_follow_argv_serves_the_run_the_far_config_names() {
+    fn a_follow_argv_serves_the_search_the_far_config_names() {
         let reach = Reach::new(&SpawnMode::Ssh, &SshDestination::known("gpubox"), "sima");
         let argv = reach.follow_serve_argv("~/sima/abc/sima.toml");
         let binary = argv.iter().position(|a| a == "sima").expect("the binary");

@@ -1,6 +1,6 @@
 //! [`reconcile`]: destroying the machines a crashed process left running.
 //!
-//! A guard tears its instance down on every exit path that searches code. What
+//! A guard tears its instance down on every exit path that runs code. What
 //! remains is the process that ran none — killed outright, or the machine
 //! it ran on lost power. The ledger record it wrote before calling the
 //! provider is the trace, and this pass acts on it:
@@ -204,7 +204,7 @@ fn reaping<P: Provider + ?Sized>(
 /// The probe is the search's orchestrator lock, which the kernel releases the
 /// moment its holder exits: a free lock means the owner is gone. The lock
 /// answers on the machine holding it, which is the machine acquisition and
-/// reconciliation both search on.
+/// reconciliation both run on.
 fn owner_alive(store: &Store, record: &InstanceRecord) -> Result<bool> {
     let owner = SearchId::from_hex(&record.owner).map_err(|_| {
         Error::Corruption(format!(

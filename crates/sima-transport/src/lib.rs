@@ -34,7 +34,7 @@
 //!
 //! The two remote transports differ by **how a worker is launched**, which is
 //! what their names state: one nests the worker in a container the transport
-//! searches, the other hands the worker to ssh as the command to execute.
+//! runs, the other hands the worker to ssh as the command to execute.
 
 pub mod container;
 pub mod device_probe;

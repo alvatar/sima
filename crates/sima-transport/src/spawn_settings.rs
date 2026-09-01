@@ -25,7 +25,7 @@ pub struct SpawnSettings {
     /// vary per worker, so each spawn sets them on a copy of this frame.
     pub(crate) hello: Hello,
     /// The digest of the program this search sent to the machine these workers
-    /// search on, which each of them answers back at the handshake; `None` for a
+    /// run on, which each of them answers back at the handshake; `None` for a
     /// format this build answers in process, where no program travelled.
     pub(crate) program_digest: Option<String>,
 }
@@ -44,14 +44,14 @@ impl SpawnSettings {
         SpawnSettings {
             policy,
             answer_timeout,
-            hello: Hello::for_run(format, checkpoint_interval, checkpoint_interval_steps),
+            hello: Hello::for_search(format, checkpoint_interval, checkpoint_interval_steps),
             program_digest: None,
         }
     }
 
     /// The same settings expecting `digest` from every worker's handshake.
     ///
-    /// `Some` names the program this search sent to the machine the workers search
+    /// `Some` names the program this search sent to the machine the workers run
     /// on, so a worker answering anything else fails its spawn; `None` expects
     /// none, and a worker naming a program fails its spawn just the same. What
     /// the digest identifies is the caller's business — this side compares.

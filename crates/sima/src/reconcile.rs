@@ -41,7 +41,7 @@ pub(crate) fn reconcile_command(config: &Path, scope: ReconcileScope) -> ExitCod
     }
 }
 
-/// Loads the config, opens its store, and searches the pass over every provider
+/// Loads the config, opens its store, and runs the pass over every provider
 /// the instance ledger names.
 fn clean_store(config: &Path, scope: ReconcileScope) -> Result<ReconcileReport> {
     let store = Store::open(load(config)?.store)?;
@@ -171,7 +171,7 @@ mod tests {
     }
 
     #[test]
-    fn an_orphan_of_a_dead_run_is_destroyed_and_its_record_cleared() -> Result<()> {
+    fn an_orphan_of_a_dead_search_is_destroyed_and_its_record_cleared() -> Result<()> {
         let (_dir, store) = temp_store();
         store.put_instance(&record("sima-tag-0", "stub", "i-1"))?;
         let report = clean(
@@ -192,7 +192,7 @@ mod tests {
     }
 
     #[test]
-    fn a_record_of_a_live_run_is_left_to_the_run_that_owns_it() -> Result<()> {
+    fn a_record_of_a_live_search_is_left_to_the_search_that_owns_it() -> Result<()> {
         let (_dir, store) = temp_store();
         store.put_instance(&record("sima-tag-0", "stub", "i-1"))?;
         // The owning search holds its orchestrator lock, which is what a live

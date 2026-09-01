@@ -56,7 +56,7 @@ fn flaky_task_retries_then_commits() -> Result<()> {
 /// search definitively: no manifest is written, yet a sibling that committed
 /// stays committed, so the store is resumable.
 #[test]
-fn exhausted_retries_fail_the_run_and_leave_the_store_resumable() -> Result<()> {
+fn exhausted_retries_fail_the_search_and_leave_the_store_resumable() -> Result<()> {
     let cfg = config(2, vec![StubBehavior::Succeed, StubBehavior::Flaky(5)]);
     let keys = task_keys(&cfg);
     let (succeed_key, flaky_key) = (keys[0], keys[1]);
@@ -132,9 +132,9 @@ fn a_panic_is_isolated_and_classified_as_a_rejection() -> Result<()> {
     Ok(())
 }
 
-/// Resume re-searches only the unfinished work. A batch where task Y never recovers
+/// Resume re-runs only the unfinished work. A batch where task Y never recovers
 /// fails with task X committed. Re-running the same config with Y fixed — which
-/// changes Y's spec, and so Y's key, the intended "re-search the fixed candidate"
+/// changes Y's spec, and so Y's key, the intended "evaluate the fixed candidate again"
 /// path — finalizes, and X, already committed under its unchanged key, is
 /// skipped by the frontier and never re-executed.
 #[test]
@@ -161,20 +161,22 @@ fn resume_reruns_only_the_unfinished_work() -> Result<()> {
     ));
     assert!(store.record(&x_key)?.is_some());
 
-    // Re-search the fixed config into the same store: it finalizes.
+    // Run the fixed config into the same store again: it finalizes.
     assert!(matches!(
         run_into(&store, &fixed, &exec(1, 3, 1_000))?,
         SearchOutcome::Finalized { .. }
     ));
 
-    let fixed_run = search_id(&fixed);
-    let events = journal_events(&store, &fixed_run);
+    let fixed_search = search_id(&fixed);
+    let events = journal_events(&store, &fixed_search);
     // X was already committed, so the fixed search never leases it; only the
-    // fixed Y searches.
+    // fixed Y runs.
     assert_eq!(leased_count(&events, &x_key), 0);
     assert_eq!(committed_count(&events, &fixed_y_key), 1);
     // The manifest covers both tasks: X carried over, fixed Y freshly committed.
-    let manifest = store.manifest(&fixed_run)?.expect("fixed search finalized");
+    let manifest = store
+        .manifest(&fixed_search)?
+        .expect("fixed search finalized");
     let tasks: Vec<_> = manifest.entries.iter().map(|e| e.task).collect();
     assert!(tasks.contains(&x_key));
     assert!(tasks.contains(&fixed_y_key));
@@ -183,11 +185,11 @@ fn resume_reruns_only_the_unfinished_work() -> Result<()> {
 
 /// A search reports the commits its store already answers, so a resumed session
 /// counts on from them instead of reading as a restart. The count comes from
-/// the frontier derivation — the same store reading that decides what to search
+/// the frontier derivation — the same store reading that decides what to run
 /// — so it is exact even against a journal that a crash left short of the
 /// records it describes.
 #[test]
-fn a_run_reports_the_commits_its_store_already_holds() -> Result<()> {
+fn a_search_reports_the_commits_its_store_already_holds() -> Result<()> {
     let cfg = config(9, vec![StubBehavior::Succeed, StubBehavior::Succeed]);
     let (_dir, store) = temp_store();
     assert!(matches!(
@@ -322,7 +324,7 @@ fn every_journal_line_carries_a_timestamp() -> Result<()> {
 /// on the worker link, and an outcome arriving early settles immediately.
 /// The test finishing within the suite's normal runtime is the guard.
 #[test]
-fn a_long_timeout_does_not_delay_the_run() -> Result<()> {
+fn a_long_timeout_does_not_delay_the_search() -> Result<()> {
     let cfg = config(12, vec![StubBehavior::Succeed, StubBehavior::Succeed]);
     let (_dir, store) = temp_store();
     assert!(matches!(
@@ -388,7 +390,7 @@ impl Executor for FaultyExecutor {
 /// distinct from a candidate that merely evaluated badly, and writes no
 /// manifest.
 #[test]
-fn an_executor_fault_fails_the_run_with_an_error() -> Result<()> {
+fn an_executor_fault_fails_the_search_with_an_error() -> Result<()> {
     let cfg = config(7, vec![StubBehavior::Reject]);
     let key = task_keys(&cfg)[0];
     let (_dir, store) = temp_store();

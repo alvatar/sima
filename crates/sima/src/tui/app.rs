@@ -36,7 +36,7 @@ use super::view;
 thread_local! {
     /// Set on the UI thread that owns the terminal, so the panic hook restores
     /// the terminal only for a panic there. Every other thread — the scheduler
-    /// worker threads that search executors, the orchestrate thread — leaves the
+    /// worker threads that run executors, the orchestrate thread — leaves the
     /// marker unset, so the hook does nothing on their panics.
     static ON_UI_THREAD: Cell<bool> = const { Cell::new(false) };
 }
@@ -352,7 +352,7 @@ fn lock_view(holder: Option<String>) -> LockView {
 
 /// Reads at most one key within the tick timeout and applies it, reporting
 /// whether the state changed. A key press is handled; releases and repeats
-/// are ignored, and `read` searches only after `poll` reports an event. A bound
+/// are ignored, and `read` runs only after `poll` reports an event. A bound
 /// key applies its action — which, behind the help overlay, the state
 /// consumes to close it. An unbound key is ignored, except that it too
 /// closes an open overlay.

@@ -130,7 +130,7 @@ mod tests {
     /// Two identities over `root` whose search ids begin with the same character,
     /// so the store they are driven into holds a prefix that names both.
     ///
-    /// Run ids are hashes, so which seeds collide is fixed by the configs
+    /// Search ids are hashes, so which seeds collide is fixed by the configs
     /// rather than chosen: the search walks them in order and takes the first
     /// pair that does, which makes the same two every time.
     fn sharing_a_leading_character(root: &Path) -> (crate::config::LoadedConfig, u64) {
@@ -152,7 +152,7 @@ mod tests {
     }
 
     /// A store holding two searches of different identities, and their ids.
-    fn two_runs(dir: &Path) -> Result<(Store, SearchId, SearchId)> {
+    fn two_searches(dir: &Path) -> Result<(Store, SearchId, SearchId)> {
         let root = dir.join("store");
         let store = Store::open(&root)?;
         let (first, second) = sharing_a_leading_character(&root);
@@ -163,11 +163,11 @@ mod tests {
     }
 
     #[test]
-    fn a_store_lists_every_run_it_holds_with_its_state_and_ledger() -> Result<()> {
+    fn a_store_lists_every_search_it_holds_with_its_state_and_ledger() -> Result<()> {
         // Two identities driven against one store: the listing is what says
         // both are in there, since a config names only one of them.
         let dir = tempfile::tempdir().expect("temp dir");
-        let (store, first, second) = two_runs(dir.path())?;
+        let (store, first, second) = two_searches(dir.path())?;
 
         let listed = searches(store.root())?;
         assert_eq!(listed.len(), 2, "{listed:?}");
@@ -194,9 +194,9 @@ mod tests {
     }
 
     #[test]
-    fn an_unambiguous_prefix_addresses_a_run_and_an_ambiguous_one_names_them() -> Result<()> {
+    fn an_unambiguous_prefix_addresses_a_search_and_an_ambiguous_one_names_them() -> Result<()> {
         let dir = tempfile::tempdir().expect("temp dir");
-        let (store, first, second) = two_runs(dir.path())?;
+        let (store, first, second) = two_searches(dir.path())?;
 
         let id = first.to_string();
         assert_eq!(resolve_search(&store, &id[..12])?, first);
@@ -217,7 +217,7 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_prefix_is_refused_rather_than_read_as_any_run() -> Result<()> {
+    fn an_empty_prefix_is_refused_rather_than_read_as_any_search() -> Result<()> {
         // It is a prefix of every search, so a store holding one would have that
         // one deleted by an argument that named nothing. The flag is what the
         // refusal names, since the fix is to type a search into it.

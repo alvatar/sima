@@ -26,11 +26,11 @@ const INTEL: u32 = 0x8086;
 const NVIDIA: u32 = 0x10de;
 
 #[test]
-fn a_run_spreads_across_two_pools_and_places_by_class() -> Result<()> {
+fn a_search_spreads_across_two_pools_and_places_by_class() -> Result<()> {
     let (_dir, store) = temp_store();
     let config = chained_config(101, vec![StubBehavior::Accumulate(2); 4], 3);
     let search = search_id(&config);
-    // Seed one chain onto each class, so both pools search real work and the
+    // Seed one chain onto each class, so both pools run real work and the
     // cross-pool binding is concrete rather than a placement race.
     store.create_search(&config)?;
     store.bind_chain(&search, 0, &class_slot(&class(INTEL)))?;

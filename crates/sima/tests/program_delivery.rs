@@ -4,14 +4,14 @@
 //!
 //! This is what a fleet machine receives before it can serve a worker for a search
 //! whose format is a program rather than a build-in format. Every test here
-//! searches in the ordinary gate: the far half is a subprocess on this machine,
+//! runs in the ordinary gate: the far half is a subprocess on this machine,
 //! with no ssh hop, no container, and no network.
 //!
 //! What each test fixes:
 //!
 //! - a delivery into an empty directory installs the program tree and stamps it
 //!   with the digest that was sent;
-//! - a second delivery of one digest moves no object and searches no install, which
+//! - a second delivery of one digest moves no object and runs no install, which
 //!   is what makes putting work on a machine twice cost nothing;
 //! - the SDK lands byte-identical to the package the orchestrator's own build
 //!   holds, since that build is the one the program speaks the wire to;
@@ -40,10 +40,10 @@ fn executable(path: &Path, text: &str) -> PathBuf {
 }
 
 /// A config under `dir` whose `stub.v1` is served by a directory payload whose
-/// install script appends a line to `installs` every time it searches.
+/// install script appends a line to `installs` every time it runs.
 ///
 /// The directory shape is what makes an install observable: a single-file
-/// payload is its own entry point and searches no script at all.
+/// payload is its own entry point and runs no script at all.
 fn config(dir: &Path, installs: &Path, sdk: bool) -> PathBuf {
     executable(
         &dir.join("src/wrapper.sh"),
@@ -132,7 +132,7 @@ fn a_delivery_installs_the_program_and_stamps_it() -> Result<()> {
     let tree = far.path().join(delivery.payload().to_string());
     assert!(
         tree.join("installed/program").is_file(),
-        "the install left the entry point a spawn searches"
+        "the install left the entry point a spawn runs"
     );
     assert_eq!(
         stamp(far.path(), delivery.payload()),

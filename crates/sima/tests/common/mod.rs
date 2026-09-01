@@ -70,9 +70,9 @@ pub const IMAGE: &str = "IMAGE";
 /// directory holding them — to be put ahead of everything on the `PATH` of the
 /// `sima` that reaches it.
 ///
-/// `ssh` drops its own options and destination and searches the rest here. The
+/// `ssh` drops its own options and destination and runs the rest here. The
 /// runtime answers `image inspect` and `kill`, and for `search` drops everything up
-/// to and including the image name, then searches the command that follows. The
+/// to and including the image name, then runs the command that follows. The
 /// bind mount needs no honouring: the mount states the identical path on both
 /// sides, and here both sides are one filesystem.
 ///
@@ -120,7 +120,7 @@ pub fn machine_stubs(dir: &Path, run_fails: bool) -> PathBuf {
         ),
     );
     // What an image carries, by the names they answer to on the PATH there: the
-    // worker a builtin format's pool spawns, and the `sima` a delivery searches.
+    // worker a builtin format's pool spawns, and the `sima` a delivery runs.
     for (built, name) in [
         (PathBuf::from(env!("CARGO_BIN_EXE_sima")), "sima"),
         (worker_binary(), "sima-worker"),
@@ -307,7 +307,7 @@ pub struct ChainTrail {
 }
 
 impl ChainTrail {
-    /// Whether the chain has segments still to search.
+    /// Whether the chain has segments still to run.
     pub fn has_work_left(&self) -> bool {
         self.committed < self.segments
     }
@@ -525,7 +525,7 @@ pub fn driving(config_path: &Path) -> Child {
 /// start, and ends it with SIGKILL. What is left behind is the state a
 /// crashed orchestrator leaves: a journal that stops mid-search with no terminal
 /// event, and a search lock the kernel released when its holder died.
-pub fn abandon_run(config_path: &Path) {
+pub fn abandon_search(config_path: &Path) {
     let mut child = driving(config_path);
     child.kill().expect("kill the orchestrator");
     child.wait().expect("reap the orchestrator");

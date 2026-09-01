@@ -28,7 +28,7 @@
 //! store under `<dir>` is shared across searches, so the sync's own have/want
 //! negotiation moves an unchanged program's bytes once, ever. And both trees
 //! are built through [`crate::stamped_tree`], so a machine that already holds a
-//! digest searches no install and several searches delivering at once build one tree
+//! digest runs no install and several searches delivering at once build one tree
 //! between them.
 //!
 //! The SDK ships from the orchestrator's build rather than from the machine's
@@ -39,9 +39,9 @@
 //!
 //! How the installed program is reached follows how the machine is:
 //!
-//! - a machine of yours searches it in the image its workers search in, with the
+//! - a machine of yours runs it in the image its workers run in, with the
 //!   delivery directory bind-mounted at the identical path on both sides;
-//! - a rented machine searches it over ssh, which already lands inside that
+//! - a rented machine runs it over ssh, which already lands inside that
 //!   machine's own container;
 //! - a machine reached without a hop is this one, so the program is spawned
 //!   directly under the explicit policy every configured program gets here.
@@ -81,8 +81,8 @@ enum Scratch {
 }
 
 /// The `sima` binary inside a worker image, by its name on the `PATH` there.
-/// A delivery's far half searches there rather than on the machine itself, so the
-/// install builds in the environment the program will search in.
+/// A delivery's far half runs there rather than on the machine itself, so the
+/// install builds in the environment the program will run in.
 const IMAGE_BINARY: &str = "sima";
 /// The directory a machine's delivered programs hang off, under the `root` its
 /// entry names. Every search delivering to that machine shares it, which is what
@@ -112,7 +112,7 @@ pub struct ProgramDelivery {
     /// variable that tree leads.
     sdk: Option<(Sdk, Hash)>,
     /// The variable names the entry declared. They cross as names alone — each
-    /// value is read on the machine the program searches on — so a credential never
+    /// value is read on the machine the program runs on — so a credential never
     /// reaches a command line or the wire.
     env: Vec<String>,
 }
@@ -153,7 +153,7 @@ impl ProgramDelivery {
         sync_against(store, &[], ObjectScope::Named(&closure), argv)
     }
 
-    /// What a container on a machine rooted at `root` searches to reach this
+    /// What a container on a machine rooted at `root` runs to reach this
     /// program, with `args` handed to it.
     ///
     /// Three things make the container's program the same program it would be
@@ -173,7 +173,7 @@ impl ProgramDelivery {
         )
     }
 
-    /// What an ssh command searches to reach this program on a machine rooted at
+    /// What an ssh command runs to reach this program on a machine rooted at
     /// `root`, with `args` handed to it.
     ///
     /// No mount and no forwarding: ssh lands inside the machine's own
@@ -361,10 +361,10 @@ pub fn ingest_program(config: &LoadedConfig, store: &Store) -> Result<Option<Pro
 /// Delivers `delivery` to every machine of yours the fleet drew in, so each
 /// holds the program before its pool is constructed.
 ///
-/// The far half searches in the image the machine's workers search in, with the
+/// The far half runs in the image the machine's workers run in, with the
 /// delivery directory bind-mounted at the identical path on both sides. Both
 /// follow from what an install is: a script that builds the program has to
-/// build it in the environment the program will search in, and the stamp it writes
+/// build it in the environment the program will run in, and the stamp it writes
 /// has to name the same file to the spawn that reads it later.
 ///
 /// A machine that cannot be delivered to fails the search, naming it. It was
@@ -395,9 +395,9 @@ pub(crate) fn deliver_to_owned(
             &machine.container.runtime,
             &machine.container.image,
             &machine.container.run_args,
-            // The delivery itself forwards nothing: it searches sima's own verb,
+            // The delivery itself forwards nothing: it runs sima's own verb,
             // and what the program needs to see is stated where the program
-            // searches.
+            // runs.
             &ContainerRun::program(vec![format!("{programs}:{programs}")], Vec::new(), command),
         );
         delivery.send(store, &argv).map_err(|e| {
@@ -531,7 +531,7 @@ mod tests {
 
     #[test]
     fn a_worker_reads_the_machine_s_own_stamp_before_it_execs_the_program() {
-        // The digest is read where the program searches, not written in from here,
+        // The digest is read where the program runs, not written in from here,
         // so what the worker answers is that disk's claim about what is
         // installed on it.
         let delivery = delivery(false, &[]);

@@ -170,7 +170,7 @@ fn resolve_domains(
     answer_timeout: Duration,
     store: &Path,
 ) -> Result<DomainRegistry> {
-    // Absolute, because a spawned program searches in a scratch working directory
+    // Absolute, because a spawned program runs in a scratch working directory
     // of its own: a path relative to this process would resolve against that
     // directory rather than against the config that named it.
     // A bare file name has an empty parent, which is this directory.
@@ -211,7 +211,7 @@ fn resolve_domains(
 
 /// Vends the SDK every entry declaring one needs, and records where, before any
 /// of their programs is spawned — so a program's `import` resolves the first
-/// time it searches.
+/// time it runs.
 ///
 /// One tree per SDK, however many entries declare it: what it holds is a
 /// property of this binary, not of any one program. An entry declaring none
@@ -278,7 +278,7 @@ fn install_payloads(
 /// `base`, the config file's own directory.
 ///
 /// The rules say the same thing four ways: an entry names exactly one source
-/// for the program that will search on the destination, and a source that needs a
+/// for the program that will run on the destination, and a source that needs a
 /// script says so.
 fn resolve_payload(
     path: &Path,
@@ -347,7 +347,7 @@ fn resolve_payload(
             Some(install)
         }
         // A directory has no entry point by convention — which of its files
-        // searches is what the script decides — while a single file is the
+        // runs is what the script decides — while a single file is the
         // program, so the script would only put it where the convention
         // already puts it.
         None if metadata.is_dir() => {
@@ -990,7 +990,7 @@ mod tests {
 
     #[test]
     fn orchestrator_container_keys_without_an_image_are_rejected_naming_the_key() {
-        // This machine searches bare unless it is asked for a container, so a
+        // This machine runs bare unless it is asked for a container, so a
         // runtime or a search flag here describes a container that does not exist.
         for key in ["runtime = \"podman\"", "run_args = [\"--gpus\", \"all\"]"] {
             let text = format!("{NO_POOL}\n[orchestrator]\nworkers = 2\n{key}\n");
@@ -1003,7 +1003,7 @@ mod tests {
 
     #[test]
     fn a_machines_container_keys_stand_without_an_image() -> Result<()> {
-        // The other side of the asymmetry: a machine of yours always searches a
+        // The other side of the asymmetry: a machine of yours always runs a
         // container, its image defaulting, so the runtime and the search flags are
         // meaningful whether or not the entry names one.
         let text = format!(
@@ -1378,7 +1378,7 @@ mod tests {
     // ---- The fleet, the budget, and cross-entry rules ----
 
     #[test]
-    fn the_fleet_lists_the_members_a_run_may_draw_on() -> Result<()> {
+    fn the_fleet_lists_the_members_a_search_may_draw_on() -> Result<()> {
         let loaded = load_text(&format!(
             r#"{BASE}
             [host.gpubox]
@@ -2041,7 +2041,7 @@ mod tests {
 
     #[test]
     fn a_directory_payload_without_an_install_script_is_refused() {
-        // A tree has no entry point by convention: which of its files searches is
+        // A tree has no entry point by convention: which of its files runs is
         // what the script decides.
         let message =
             payload_rejection(|dir| format!("payload = {:?}", dir_payload(dir).display()));
@@ -2251,7 +2251,7 @@ mod tests {
                 .join(".sima/program/stub.v1/installed/program")
         }
 
-        /// How many times an install script that counts itself has search.
+        /// How many times an install script that counts itself has run.
         fn installs(&self) -> usize {
             std::fs::read_to_string(self.dir.path().join("installs"))
                 .map(|text| text.lines().count())
@@ -2283,7 +2283,7 @@ mod tests {
     }
 
     /// A directory payload of one wrapper, installed by a script that records
-    /// each search in `<dir>/installs` and puts the wrapper where the convention
+    /// each execution in `<dir>/installs` and puts the wrapper where the convention
     /// says. `extra` is appended to the tree so two payloads can differ.
     fn counted_payload(dir: &Path, extra: &str) -> PayloadSpec {
         wrapper(&dir.join("src/wrapper.sh"));
@@ -2332,7 +2332,7 @@ mod tests {
             .permissions()
             .mode()
             & 0o777;
-        assert_eq!(mode, 0o755, "the entry point searches");
+        assert_eq!(mode, 0o755, "the entry point runs");
         // The load spawned it and it answered, which is what routing it proves.
         assert_eq!(
             loaded
@@ -2417,7 +2417,7 @@ mod tests {
     #[test]
     fn a_reinstall_leaves_nothing_of_the_tree_it_replaced() -> Result<()> {
         // The previous payload's files are not the new program's, and a
-        // wrapper that still found them would search a build nobody asked for.
+        // wrapper that still found them would run a build nobody asked for.
         let leaves = |dir: &Path, extra: &str| -> PayloadSpec {
             wrapper(&dir.join("src/wrapper.sh"));
             fs::write(dir.join("src/note"), extra).expect("write the note");

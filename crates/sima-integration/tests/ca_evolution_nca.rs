@@ -1,5 +1,5 @@
 //! End-to-end acceptance of the `ca_evolution` domain's asynchronous Neural CA
-//! model through the pipeline API: a `ca_evolution.nca` `sima.toml` searches generate
+//! model through the pipeline API: a `ca_evolution.nca` `sima.toml` runs generate
 //! → execute → commit → inspect to a finalized manifest committing framed
 //! continuation state over 8-channel grids, a segment boundary leaves the
 //! committed trajectory byte-identical, and a malformed `[search.params]` or

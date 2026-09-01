@@ -5,7 +5,7 @@
 //! sima draws candidates, schedules them over workers and machines, stores
 //! every result by its content, and records how each one was produced. A
 //! program supplies the problem itself: what a candidate is, how to evaluate
-//! one, what settings a search may state, and what hardware the work searches on.
+//! one, what settings a search may state, and what hardware the work runs on.
 //!
 //! This program evaluates a candidate of one byte by doubling it. Everything
 //! sima needs from a real program, it needs from this one too, which is why
@@ -41,7 +41,7 @@
 //! binary = "/path/to/sima-example-executor"
 //! ```
 //!
-//! sima searches the binary in two roles: once per configured format to ask what
+//! sima runs the binary in two roles: once per configured format to ask what
 //! the format binds, and once per worker slot to execute tasks. Both are the
 //! same program; [`sima_api::serve`] resolves which is being asked.
 //!
@@ -163,7 +163,7 @@ impl Generator for DoublerGenerator {
 
 /// Evaluates a one-byte spec: the result is that byte doubled.
 ///
-/// One executor is built per worker and searches every task that worker takes, so
+/// One executor is built per worker and runs every task that worker takes, so
 /// this is where a real program holds what is expensive to acquire: its device
 /// context, its compiled kernels, its loaded assets.
 pub struct DoublerExecutor {
@@ -174,7 +174,7 @@ pub struct DoublerExecutor {
 }
 
 impl DoublerExecutor {
-    /// Binds the executor to the format its specs carry and the device it searches
+    /// Binds the executor to the format its specs carry and the device it runs
     /// on.
     pub fn new(device: Option<DeviceBinding>) -> Result<DoublerExecutor> {
         Ok(DoublerExecutor {
@@ -241,7 +241,7 @@ impl Executor for DoublerExecutor {
 // ===========================================================================
 
 /// What the format binds: its executor, the environment its results depend on,
-/// the devices it searches on, and the translation of `[search.params]`.
+/// the devices it runs on, and the translation of `[search.params]`.
 pub struct DoublerDomain {
     format: FormatId,
     environment: Environment,
@@ -311,7 +311,7 @@ impl Domain for DoublerDomain {
     }
 
     // `executor` builds the executor on the device sima placed this worker on.
-    // A constructor rather than a stored object, because it searches in the worker
+    // A constructor rather than a stored object, because it runs in the worker
     // process where the device is finally known: a real program opens its
     // context, compiles its kernels, and loads its assets here, once.
     fn executor(&self, device: Option<&DeviceBinding>) -> Result<Box<dyn Executor + Sync>> {

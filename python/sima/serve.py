@@ -1,6 +1,6 @@
 """The two conversations a program answers, and :func:`serve`, which runs them.
 
-One process answers both roles a run needs, and the argument vector says which:
+One process answers both roles a search needs, and the argument vector says which:
 bare, it is a **worker** executing tasks; under ``--serve-domain <format>``, it
 is the **domain service** answering what that format binds. A whole program is
 its :class:`~sima.model.Domain`, its :class:`~sima.model.Generator` list, and
@@ -274,7 +274,7 @@ def _generator(generators: list[Generator], id: str) -> Generator:
 
 
 def _serve_worker(domain: Domain, reader: BinaryIO, writer: BinaryIO) -> None:
-    """Executes tasks for the life of the run: handshake, then one assignment
+    """Executes tasks for the life of the search: handshake, then one assignment
     after another until the parent closes the pipe."""
     payload = read_frame(reader)
     if payload is None:

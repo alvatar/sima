@@ -32,7 +32,7 @@ const TAG_COMPLETE: u8 = 3;
 const TAG_FAULT: u8 = 4;
 
 /// One frame of the follow stream, written by the host the search's orchestrator
-/// searches on.
+/// runs on.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FollowFrame {
     /// The opening frame, always first: the protocol version and the search

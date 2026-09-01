@@ -94,7 +94,7 @@ mod tests {
         }
     }
 
-    /// The params every fixture task searches under.
+    /// The params every fixture task runs under.
     fn params() -> Params {
         Params { bytes: vec![1] }
     }
@@ -177,7 +177,7 @@ mod tests {
     }
 
     #[test]
-    fn a_run_with_no_segments_names_the_identity_components_alone() -> Result<()> {
+    fn a_search_with_no_segments_names_the_identity_components_alone() -> Result<()> {
         // A completed stateless task's output is never an input to anything, so
         // there is no continuation state to hand anyone.
         let (_dir, store) = store();
@@ -252,7 +252,7 @@ mod tests {
         use crate::fixtures::{drive_search, stub_environment, sync_between};
 
         /// A search of one candidate over twenty accumulating segments.
-        fn chained_run() -> SearchConfig {
+        fn chained_search() -> SearchConfig {
             SearchConfig {
                 root_seed: 5,
                 segments: std::num::NonZeroU64::new(20),
@@ -274,12 +274,12 @@ mod tests {
             // every record and only the frontier's state bytes, and derives
             // exactly the frontier the complete store derives — a chain is
             // located from its records, and the state bytes are what the
-            // frontier segment *searches on*, not what finds it.
+            // frontier segment *runs on*, not what finds it.
             let here = tempfile::tempdir().expect("temp dir");
             let there = tempfile::tempdir().expect("temp dir");
             let local = Store::open(here.path())?;
             let far = Store::open(there.path())?;
-            let config = chained_run();
+            let config = chained_search();
             // Stopped shortly after it starts committing, so the chain is
             // partway and has a frontier to hand over.
             assert!(matches!(

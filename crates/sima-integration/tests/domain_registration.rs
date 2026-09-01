@@ -1,6 +1,6 @@
 //! End-to-end acceptance of a format served by its own program: the protocol
 //! carries everything a search's identity is made of, and a program outside this
-//! workspace searches a whole search through the same spine.
+//! workspace runs a whole search through the same spine.
 //!
 //! The equivalence here is what proves the protocol sufficient. A search driven
 //! through a program produces the search id and the task keys the same search
@@ -97,7 +97,7 @@ fn example_config(store: &str, count: u32, program: &Path) -> String {
 }
 
 /// The candidate count a search cannot finish in the window between the commit
-/// that raises the interrupt and the driver observing it. The observer searches on
+/// that raises the interrupt and the driver observing it. The observer runs on
 /// the collector's thread, so a loaded machine can delay the flag past a short
 /// search's last commit; this count makes the interrupting tests decide on the
 /// ordering of events rather than on how fast this machine is.
@@ -141,7 +141,7 @@ fn worker() -> PathBuf {
     built_binary("sima-worker")
 }
 
-/// The variable the wrapper script refuses to search with: a stand-in for a
+/// The variable the wrapper script refuses to run with: a stand-in for a
 /// credential the orchestrator holds in its own environment and no program
 /// has a claim on.
 const CANARY: &str = "SIMA_TEST_CANARY";
@@ -223,7 +223,7 @@ fn digest_of(path: &Path) -> String {
 fn a_program_receives_the_spawn_surface_its_entry_declares() {
     // The spawn surface, observed by the program itself through a whole search:
     // the canary dropped, the declared name forwarded, the working directory
-    // its own. The orchestrator searches as its own process here because that is
+    // its own. The orchestrator runs as its own process here because that is
     // the only way its environment can hold what the child must and must not
     // receive.
     let dir = tempfile::tempdir().expect("temp dir");
@@ -258,7 +258,7 @@ fn a_program_receives_the_spawn_surface_its_entry_declares() {
 }
 
 #[test]
-fn a_run_through_a_program_keeps_the_identity_it_has_by_direct_call() -> Result<()> {
+fn a_search_through_a_program_keeps_the_identity_it_has_by_direct_call() -> Result<()> {
     // The proof the protocol carries everything the parent needs: the params,
     // the generator's settings, the environment, and every spec the generator
     // produced all enter these hashes, so a field the protocol dropped would
@@ -288,7 +288,7 @@ fn a_run_through_a_program_keeps_the_identity_it_has_by_direct_call() -> Result<
 }
 
 #[test]
-fn a_run_through_a_program_commits_what_it_would_have_committed() -> Result<()> {
+fn a_search_through_a_program_commits_what_it_would_have_committed() -> Result<()> {
     // The identity holds through execution too: the same search driven both ways
     // finalizes over the same manifest entries.
     let dir = tempfile::tempdir().expect("temp dir");
@@ -370,10 +370,10 @@ fn a_search_runs_end_to_end_through_a_program_of_its_own() -> Result<()> {
 }
 
 #[test]
-fn a_run_through_a_program_resumes_after_an_interruption() -> Result<()> {
+fn a_search_through_a_program_resumes_after_an_interruption() -> Result<()> {
     // The store is the only durable state, so an interrupted search continues
     // where it stopped — the program is spawned afresh and the tasks already
-    // committed are not search again.
+    // committed are not run again.
     let dir = tempfile::tempdir().expect("temp dir");
     let program = built_binary("sima-example-executor");
     let text = example_config("./store", UNFINISHABLE, &program);
@@ -421,7 +421,7 @@ fn a_run_through_a_program_resumes_after_an_interruption() -> Result<()> {
 }
 
 #[test]
-fn a_run_through_a_program_journals_the_build_that_served_it() -> Result<()> {
+fn a_search_through_a_program_journals_the_build_that_served_it() -> Result<()> {
     // Provenance the environment hash never sees: the search's identity is what
     // the program declares, and the journal says which build declared it.
     let dir = tempfile::tempdir().expect("temp dir");
@@ -611,14 +611,14 @@ fn a_migration_of_a_program_that_states_no_payload_is_refused_where_it_is_asked_
     // anything moves.
     //
     // This config names no destination either, and the error names the program
-    // rather than the missing host: the guard searches ahead of the destination,
+    // rather than the missing host: the guard runs ahead of the destination,
     // the store, the lock, and any provider.
     let dir = tempfile::tempdir().expect("temp dir");
     let path = dir.path().join("sima.toml");
     std::fs::write(&path, stub_config("./store", Some(&worker()), &[])).expect("write the config");
     let interrupt = AtomicBool::new(false);
     // Progress reporting is a side effect like any other, so the observer
-    // counts: the guard searches ahead of the collector that would feed it.
+    // counts: the guard runs ahead of the collector that would feed it.
     let observed = AtomicUsize::new(0);
     let observer = |_: &Record| {
         observed.fetch_add(1, Ordering::Relaxed);

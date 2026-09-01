@@ -25,7 +25,7 @@ fn search(config: &Path) -> std::process::Output {
     run_with_worker(config, &worker_binary())
 }
 
-/// Writes an executable worker wrapper under `dir` that searches `prelude` in
+/// Writes an executable worker wrapper under `dir` that runs `prelude` in
 /// `sh` and then execs the real worker — the shape a container client
 /// takes, used here to make a worker print to stderr before serving.
 fn wrapper_worker(dir: &Path, prelude: &str) -> PathBuf {
@@ -81,7 +81,7 @@ fn diagnostics(events: &[Event]) -> Vec<Diagnostic> {
 }
 
 #[test]
-fn every_journal_line_of_a_subprocess_run_is_a_stamped_record() {
+fn every_journal_line_of_a_subprocess_execution_is_a_stamped_record() {
     let dir = tempfile::tempdir().expect("temp dir");
     let config = write_config(
         dir.path(),

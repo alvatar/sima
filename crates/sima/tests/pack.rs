@@ -60,7 +60,7 @@ fn finalized_search(behaviors: &str) -> (tempfile::TempDir, PathBuf, PathBuf) {
 }
 
 #[test]
-fn pack_consolidates_a_store_a_run_wrote_and_the_run_still_reads() {
+fn pack_consolidates_a_store_a_search_wrote_and_the_search_still_reads() {
     let (_dir, config, store) = finalized_search(r#""succeed", "succeed", "succeed""#);
     let before = loose_object_count(&store);
     assert!(before > 0, "the search wrote loose objects");

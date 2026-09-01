@@ -316,7 +316,7 @@ fn prior_drivers(store: &Store, search: &SearchId) -> HashMap<(String, String), 
 /// The device classes the search's pools carry, distinct, in pool-then-slot
 /// order. This is placement's eligibility set: a class is global (decision
 /// C3), so a class present on any pool is a class the search has, and a chain
-/// bound to it searches on whichever pool holds it. For a single pool this is
+/// bound to it runs on whichever pool holds it. For a single pool this is
 /// exactly that pool's classes in slot order.
 fn eligible_classes(pools: &[WorkerPool<'_>]) -> Vec<DeviceClass> {
     let mut classes = Vec::new();
@@ -386,7 +386,7 @@ fn drive(
         if control.interrupt.load(Ordering::Relaxed) {
             coordinator.interrupt();
         }
-        // The shared state decides; a poll searches outside its lock. Without
+        // The shared state decides; a poll runs outside its lock. Without
         // anything to do the gate parks for one bounded wait and answers
         // `None`, so this loop comes back around to re-check the interrupt
         // flag.
@@ -550,7 +550,7 @@ mod tests {
     }
 
     #[test]
-    fn a_run_naming_no_device_leaves_every_slot_unbound() -> Result<()> {
+    fn a_search_naming_no_device_leaves_every_slot_unbound() -> Result<()> {
         // The single implicit class: every child takes the backend's own
         // choice, and the pool is the plain worker count.
         let exec = ExecutionConfig::new(3, 1, Duration::MAX, Duration::MAX, Duration::MAX, None)?;
@@ -638,7 +638,7 @@ mod tests {
     }
 
     #[test]
-    fn a_poll_error_winds_the_run_down_instead_of_hanging() {
+    fn a_poll_error_winds_the_search_down_instead_of_hanging() {
         let coordinator = Coordinator::new();
         let (tx, _rx) = mpsc::channel();
         let events = Emitter::from(tx);
@@ -698,7 +698,7 @@ mod tests {
     }
 
     #[test]
-    fn a_preset_fault_is_returned_as_the_run_error() {
+    fn a_preset_fault_is_returned_as_the_search_error() {
         let coordinator = Coordinator::new();
         coordinator.fault_search(Error::Corruption("store broke".to_string()));
         let (tx, _rx) = mpsc::channel();
@@ -739,7 +739,7 @@ mod tests {
         // the whole pool to drain. Scripted: poll 1 yields tasks A and C,
         // poll 2 yields B — modeling C's successor. The fake worker resolves
         // C while holding A's lease; B must be queued before A releases,
-        // which only a poll gate that searches with leases outstanding can do.
+        // which only a poll gate that runs with leases outstanding can do.
         let coordinator = Coordinator::new();
         let (tx, rx) = mpsc::channel();
         let events = Emitter::from(tx);

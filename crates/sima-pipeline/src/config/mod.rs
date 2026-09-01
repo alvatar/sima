@@ -34,7 +34,7 @@
 //! # ssh      = "user@10.0.0.5"            # override the address
 //! # image    = "localhost/sima:latest"    # default as shown
 //! # runtime  = "podman"                   # docker | podman; default docker
-//! # run_args = ["--gpus", "all"]          # verbatim container-search flags
+//! # run_args = ["--gpus", "all"]          # verbatim container-run flags
 //! # workers  = 4                          # exclusive with the device tables below
 //! # root     = "~/sima"              # a migrated search's directory and the programs delivered here; default as shown
 //! # binary   = "sima"                     # the sima binary here; default as shown
@@ -91,9 +91,9 @@
 //!
 //! [orchestrator]                          # this machine
 //! migrate = "cloudbox"                   # the host `sima migrate` moves the search onto
-//! # image    = "localhost/sima:latest"    # search this machine's workers in a container
+//! # image    = "localhost/sima:latest"    # run this machine's workers in a container
 //! # runtime  = "podman"                   # docker | podman; default docker
-//! # run_args = ["--gpus", "all"]          # verbatim container-search flags
+//! # run_args = ["--gpus", "all"]          # verbatim container-run flags
 //! # workers  = 4                          # exclusive with the device tables below
 //! [[orchestrator.device]]
 //! select  = "nvidia"
@@ -143,7 +143,7 @@
 //!
 //! ### What travels when the search reaches another machine
 //!
-//! `binary` says how the program searches here; `payload` says what travels — one
+//! `binary` says how the program runs here; `payload` says what travels — one
 //! file or one directory, resolved against this file's directory. It travels
 //! the same way for both ways of using another machine: `sima migrate` sends it
 //! to the destination, and `sima search --fleet` sends it to every machine the
@@ -152,12 +152,12 @@
 //! program this machine holds and no other, and both refuse it, naming the key.
 //! A plain local `sima search` validates both keys and otherwise ignores them.
 //!
-//! `install` is the shell script the destination searches over the materialized
+//! `install` is the shell script the destination runs over the materialized
 //! payload. It is optional for a single-file payload, which is its own entry
-//! point, and required for a directory, where which file searches is what the
+//! point, and required for a directory, where which file runs is what the
 //! script decides. The contract:
 //!
-//! - it searches as `/bin/sh install.sh`, working directory the program tree, under
+//! - it runs as `/bin/sh install.sh`, working directory the program tree, under
 //!   the destination's own environment plus `SIMA_PAYLOAD_DIR` (the
 //!   materialized payload) and `SIMA_INSTALL_DIR` (where to leave what it
 //!   builds). Nothing is forwarded from the machine that sent the payload;
@@ -177,7 +177,7 @@
 //! The digest has a second consumer past the install: it is what every worker
 //! of the search answers at its handshake. Each process spawned from the program
 //! is told it, echoes it back, and a worker answering anything else fails its
-//! spawn — so the machines a search uses agree with it on which program they search.
+//! spawn — so the machines a search uses agree with it on which program they run.
 //! On a machine the search delivered to, the value is read from that machine's own
 //! stamp at exec time, so what it answers is that disk's claim.
 //!
@@ -213,7 +213,7 @@
 //! | `count` | class only | class only | how many machines |
 //! | `image` | yes | yes | the worker image |
 //! | `runtime` | yes | no | `docker` or `podman` |
-//! | `run_args` | yes | no | verbatim container-search flags |
+//! | `run_args` | yes | no | verbatim container-run flags |
 //! | `workers` | yes | no | plain worker count, exclusive with device tables |
 //! | `[[….device]]` | yes | no | device tables, exclusive with `workers` |
 //! | `provider` | no | yes | `vast` or `stub` |
@@ -246,7 +246,7 @@
 //!   search that rents nothing.
 //! - `max_wall_clock_ms` bounds how long the search may compute, measured from the
 //!   start of each execution, and `0` states no ceiling at all — the same as
-//!   omitting the key. It is kept where no bill searches against the time it
+//!   omitting the key. It is kept where no bill runs against the time it
 //!   bounds: a plain `sima search` interrupts itself on it, and so does a search
 //!   migrated onto a machine of yours, which carries the key. The key does not
 //!   travel to a rented destination, because a rental bills by the hour rather

@@ -26,13 +26,13 @@ use crate::substrates::cellular::{CellularEngine, EvaluationInput, Grid};
 ///
 /// Everything above is written once for every backend. What differs between
 /// backends — opening a device, compiling kernels, dispatching, reducing —
-/// sits behind [`CellularEngine`], so a model searches on a second backend by being
+/// sits behind [`CellularEngine`], so a model runs on a second backend by being
 /// registered against a second engine and nothing here changes.
 ///
 /// The engine is created lazily on the first execute, never at construction,
 /// so [`build_binding`](super::binding::build_binding) stays device-free —
-/// orchestrate calls it before any store mutation, and unit tests search with no
-/// GPU. A `Mutex` serializes the GPU section: the scheduler searches `workers`
+/// orchestrate calls it before any store mutation, and unit tests run with no
+/// GPU. A `Mutex` serializes the GPU section: the scheduler runs `workers`
 /// threads calling `execute` on one shared executor, and a single GPU serializes
 /// the work anyway. The span the lock covers and why it is required are
 /// documented inline at the lock site.
@@ -638,7 +638,7 @@ mod tests {
 
         #[test]
         fn a_stepped_evaluation_reduces_the_decoded_grid() {
-            // A stepped model frames its committed state, but the reduction searches over
+            // A stepped model frames its committed state, but the reduction runs over
             // the resident grid pair, so it names the same scalars. NCA, eight
             // channels, is the vehicle.
             let exec = CaExecutor::<Nca, WgslEngine>::new(None).expect("executor");

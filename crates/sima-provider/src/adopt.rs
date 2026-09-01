@@ -226,7 +226,7 @@ mod tests {
     }
 
     #[test]
-    fn a_worker_rental_and_another_run_s_rental_are_not_this_caller_s() -> Result<()> {
+    fn a_worker_rental_and_another_search_s_rental_are_not_this_caller_s() -> Result<()> {
         let (_dir, store) = temp_store();
         let search = sample_search(3);
         let lock = store.acquire_search_lock(&search)?;

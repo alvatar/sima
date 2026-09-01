@@ -1,13 +1,13 @@
 //! A `--fleet` search whose format is served by a program of its own, on machines
 //! of yours: the program is delivered to each machine, installed there, and the
-//! machine's workers search it.
+//! machine's workers run it.
 //!
-//! A machine of yours is reached over ssh and its workers search in a container, so
+//! A machine of yours is reached over ssh and its workers run in a container, so
 //! this suite stands in for both. `ssh` and the container runtime are shell
-//! scripts on the search's `PATH` that strip their own wrapping and search the command
+//! scripts on the search's `PATH` that strip their own wrapping and run the command
 //! they were handed here — which is exactly what the real pair do, minus the
 //! network and the namespace. Every argv the pipeline builds is therefore the
-//! real one, and every test searches in the ordinary gate.
+//! real one, and every test runs in the ordinary gate.
 //!
 //! What each test fixes:
 //!
@@ -124,7 +124,7 @@ fn config(dir: &Path, root: &Path, entry: &str, local: usize) -> PathBuf {
 }
 
 /// Runs `sima search <config> --fleet` and answers its exit code and stderr.
-fn fleet_run(bin: &Path, config: &Path) -> (Option<i32>, String) {
+fn fleet_search(bin: &Path, config: &Path) -> (Option<i32>, String) {
     let output = fleet_command(bin)
         .args(["search", config.to_str().expect("utf-8 path"), "--fleet"])
         .output()
@@ -168,7 +168,7 @@ fn an_entry_that_names_no_payload_refuses_before_any_machine_is_contacted() {
 }
 
 #[test]
-fn a_fleet_run_ingests_the_program_and_delivers_it_to_every_machine() -> Result<()> {
+fn a_fleet_search_ingests_the_program_and_delivers_it_to_every_machine() -> Result<()> {
     // What the machine must hold before a pool of its own exists. The search's own
     // outcome is not this test's subject — the delivery is, and it is what
     // every later stage rests on.
@@ -177,7 +177,7 @@ fn a_fleet_run_ingests_the_program_and_delivers_it_to_every_machine() -> Result<
     let log = dir.path().join("installs");
     let bin = machine_stubs(dir.path(), false);
     let config = config(dir.path(), far.path(), &program(dir.path(), &log), 1);
-    fleet_run(&bin, &config);
+    fleet_search(&bin, &config);
 
     // The closure is in the search's own store, which is what a delivery sends
     // from and what a second search reuses.
@@ -197,7 +197,7 @@ fn a_fleet_run_ingests_the_program_and_delivers_it_to_every_machine() -> Result<
     // A second search delivers nothing and installs nothing: the machine's store
     // holds every object and its stamp answers the install.
     let ran = installs(&log);
-    fleet_run(&bin, &config);
+    fleet_search(&bin, &config);
     assert_eq!(
         installs(&log),
         ran,
@@ -222,7 +222,7 @@ fn installs(path: &Path) -> usize {
 }
 
 #[test]
-fn a_machine_that_cannot_receive_the_program_fails_the_run_naming_it() {
+fn a_machine_that_cannot_receive_the_program_fails_the_search_naming_it() {
     // A machine of yours was declared as a place this search executes, and without
     // the program it can serve no worker — so the search fails rather than
     // proceeding on whatever else it has.
@@ -232,7 +232,7 @@ fn a_machine_that_cannot_receive_the_program_fails_the_run_naming_it() {
     let bin = machine_stubs(dir.path(), true);
     let config = config(dir.path(), far.path(), &program(dir.path(), &log), 1);
 
-    let (code, stderr) = fleet_run(&bin, &config);
+    let (code, stderr) = fleet_search(&bin, &config);
     assert_ne!(code, Some(0), "{stderr}");
     assert!(
         stderr.contains("machine"),
@@ -253,7 +253,7 @@ fn a_format_this_build_carries_delivers_nothing() {
     let bin = machine_stubs(dir.path(), false);
     let config = config(dir.path(), far.path(), "", 1);
 
-    let (code, stderr) = fleet_run(&bin, &config);
+    let (code, stderr) = fleet_search(&bin, &config);
     assert_eq!(code, Some(0), "{stderr}");
     assert!(
         !far.path().join("programs").exists(),
@@ -288,7 +288,7 @@ fn the_machine_s_workers_run_what_was_installed_there_and_answer_its_stamp() -> 
     let bin = machine_stubs(dir.path(), false);
     let config = config(dir.path(), far.path(), &program(dir.path(), &log), 0);
 
-    let (code, stderr) = fleet_run(&bin, &config);
+    let (code, stderr) = fleet_search(&bin, &config);
     assert_eq!(code, Some(0), "{stderr}");
 
     let digest = delivered(&far.path().join("programs")).to_string();
@@ -305,7 +305,7 @@ fn the_machine_s_workers_run_what_was_installed_there_and_answer_its_stamp() -> 
 }
 
 #[test]
-fn a_worker_the_run_sent_no_program_to_answers_none() -> Result<()> {
+fn a_worker_the_search_sent_no_program_to_answers_none() -> Result<()> {
     // The orchestrator spawns the program where it already sits, so it sent
     // itself nothing and expects nothing back. Its own pool carries this search.
     let dir = tempfile::tempdir().expect("temp dir");
@@ -320,7 +320,7 @@ fn a_worker_the_run_sent_no_program_to_answers_none() -> Result<()> {
     )
     .expect("rewrite the config");
 
-    let (code, stderr) = fleet_run(&bin, &config);
+    let (code, stderr) = fleet_search(&bin, &config);
     assert_eq!(code, Some(0), "{stderr}");
     for program in bound_programs(&config)? {
         assert_eq!(program, None, "the orchestrator was sent no program");
@@ -344,7 +344,7 @@ fn a_machine_holding_another_program_fails_its_spawn_naming_both_digests() {
     );
     // The machine's own install writes an entry point that overrides what the
     // shell read from the stamp; the orchestrator's install of the same payload
-    // is never spawned through it, since its pool searches the config's `binary`.
+    // is never spawned through it, since its pool runs the config's `binary`.
     executable(
         &dir.path().join("install.sh"),
         &format!(
@@ -364,7 +364,7 @@ fn a_machine_holding_another_program_fails_its_spawn_naming_both_digests() {
         0,
     );
 
-    let (code, stderr) = fleet_run(&bin, &config);
+    let (code, stderr) = fleet_search(&bin, &config);
     assert_ne!(code, Some(0), "{stderr}");
     assert!(
         stderr.contains("program digest mismatch"),
@@ -618,7 +618,7 @@ fn a_layoutless_config_over_a_delivered_program_derives_its_workers() -> Result<
     // A delivery is what puts a payload digest in a store, so one is made here
     // the same way and the digest it lands under is what the config states.
     let source = config(dir.path(), far.path(), &program(dir.path(), &log), 1);
-    fleet_run(&bin, &source);
+    fleet_search(&bin, &source);
     let digest = delivered(&far.path().join("programs")).to_string();
 
     let config = layoutless_config(dir.path(), Some(&digest));

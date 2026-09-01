@@ -36,7 +36,7 @@
 //!
 //! [`Domain`] is the declaration side: what a program hands over so a search can
 //! reach its executor. It carries the format's environment, the devices its
-//! work searches on, and the translation of the program's own configuration, which
+//! work runs on, and the translation of the program's own configuration, which
 //! crosses as TOML text. A program supplies two components — one [`Domain`] and
 //! one [`Generator`] per way of choosing candidates.
 //!

@@ -520,7 +520,7 @@ mod tests {
 
     /// Commits the seed-1 and seed-2 sample tasks and creates the sample
     /// search, returning the search id and the two task keys.
-    fn committed_run(store: &crate::Store) -> Result<(SearchId, Vec<sima_model::TaskKey>)> {
+    fn committed_search(store: &crate::Store) -> Result<(SearchId, Vec<sima_model::TaskKey>)> {
         store_identity_components(store);
         let mut keys = Vec::new();
         for seed in [1, 2] {
@@ -564,7 +564,7 @@ mod tests {
         // both equal to the hand-written pin.
         for order in [[0, 1], [1, 0]] {
             let (dir, store) = temp_store();
-            let (search, keys) = committed_run(&store)?;
+            let (search, keys) = committed_search(&store)?;
             store.finalize_search(&search, &[keys[order[0]], keys[order[1]]])?;
             let path = dir
                 .path()
@@ -591,7 +591,7 @@ mod tests {
     #[test]
     fn finalize_with_an_uncommitted_key_is_validation_error_naming_it() -> Result<()> {
         let (_dir, store) = temp_store();
-        let (search, mut keys) = committed_run(&store)?;
+        let (search, mut keys) = committed_search(&store)?;
         let uncommitted = sample_identity(3).key();
         keys.push(uncommitted);
         match store.finalize_search(&search, &keys) {
@@ -606,7 +606,7 @@ mod tests {
     #[test]
     fn finalize_with_duplicate_keys_is_validation_error() -> Result<()> {
         let (_dir, store) = temp_store();
-        let (search, keys) = committed_run(&store)?;
+        let (search, keys) = committed_search(&store)?;
         assert!(matches!(
             store.finalize_search(&search, &[keys[0], keys[1], keys[0]]),
             Err(Error::Validation(_))
@@ -617,7 +617,7 @@ mod tests {
     #[test]
     fn refinalize_with_the_same_keys_is_a_no_op() -> Result<()> {
         let (dir, store) = temp_store();
-        let (search, keys) = committed_run(&store)?;
+        let (search, keys) = committed_search(&store)?;
         store.finalize_search(&search, &keys)?;
         let path = dir
             .path()
@@ -635,7 +635,7 @@ mod tests {
     #[test]
     fn refinalize_with_different_keys_is_corruption() -> Result<()> {
         let (_dir, store) = temp_store();
-        let (search, keys) = committed_run(&store)?;
+        let (search, keys) = committed_search(&store)?;
         store.finalize_search(&search, &keys)?;
         assert!(matches!(
             store.finalize_search(&search, &keys[..1]),
@@ -647,7 +647,7 @@ mod tests {
     #[test]
     fn manifest_round_trips_typed_data() -> Result<()> {
         let (_dir, store) = temp_store();
-        let (search, keys) = committed_run(&store)?;
+        let (search, keys) = committed_search(&store)?;
         store.finalize_search(&search, &keys)?;
         let manifest = store.manifest(&search)?.expect("finalized manifest");
         assert_eq!(manifest.search, search);
@@ -661,7 +661,7 @@ mod tests {
     #[test]
     fn manifest_of_an_unfinalized_search_is_none() -> Result<()> {
         let (_dir, store) = temp_store();
-        let (search, _keys) = committed_run(&store)?;
+        let (search, _keys) = committed_search(&store)?;
         assert!(store.manifest(&search)?.is_none());
         Ok(())
     }
@@ -669,7 +669,7 @@ mod tests {
     #[test]
     fn a_manifest_copied_into_another_search_directory_is_corruption() -> Result<()> {
         let (dir, store) = temp_store();
-        let (search, keys) = committed_run(&store)?;
+        let (search, keys) = committed_search(&store)?;
         store.finalize_search(&search, &keys)?;
         let other = store.create_search(&sample_search_config(43))?;
         let manifest_of = |search: &SearchId| {
@@ -686,7 +686,7 @@ mod tests {
     #[test]
     fn a_hand_corrupted_manifest_file_is_corruption() -> Result<()> {
         let (dir, store) = temp_store();
-        let (search, keys) = committed_run(&store)?;
+        let (search, keys) = committed_search(&store)?;
         store.finalize_search(&search, &keys)?;
         let path = dir
             .path()
@@ -703,7 +703,7 @@ mod tests {
     #[test]
     fn closure_equals_the_hand_assembled_object_set() -> Result<()> {
         let (_dir, store) = temp_store();
-        let (search, keys) = committed_run(&store)?;
+        let (search, keys) = committed_search(&store)?;
         store.finalize_search(&search, &keys)?;
         // The closure, assembled by hand: the config object (= search id),
         // both record objects, the shared spec/params/environment (once
@@ -745,7 +745,7 @@ mod tests {
     #[test]
     fn closure_of_an_unfinalized_search_is_validation_error() -> Result<()> {
         let (_dir, store) = temp_store();
-        let (search, _keys) = committed_run(&store)?;
+        let (search, _keys) = committed_search(&store)?;
         assert!(matches!(
             store.search_closure(&search),
             Err(Error::Validation(_))
@@ -756,7 +756,7 @@ mod tests {
     #[test]
     fn closure_over_a_deleted_artifact_is_missing_object_naming_it() -> Result<()> {
         let (dir, store) = temp_store();
-        let (search, keys) = committed_run(&store)?;
+        let (search, keys) = committed_search(&store)?;
         store.finalize_search(&search, &keys)?;
         let artifact = hash_bytes(&1u64.to_le_bytes());
         let hex = artifact.to_string();
@@ -772,7 +772,7 @@ mod tests {
     #[test]
     fn closure_order_is_deterministic_across_calls() -> Result<()> {
         let (_dir, store) = temp_store();
-        let (search, keys) = committed_run(&store)?;
+        let (search, keys) = committed_search(&store)?;
         store.finalize_search(&search, &keys)?;
         assert_eq!(
             store.search_closure(&search)?,

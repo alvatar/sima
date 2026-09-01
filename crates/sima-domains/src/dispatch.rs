@@ -1,7 +1,7 @@
 //! The static dispatches from config ids to code.
 //!
 //! A format id binds one [`Domain`]: the executor that evaluates specs of the
-//! format, the environment its results depend on, the devices its work searches on,
+//! format, the environment its results depend on, the devices its work runs on,
 //! and the translation of the `[search.params]` section it owns. Generators
 //! dispatch separately, because one format has one executor but many
 //! generators, and a generator owns the translation of its own
@@ -151,7 +151,7 @@ mod tests {
         // Both dispatches are separate matches over the same ids, so a format
         // added to one and forgotten in the other resolves for some purposes
         // and not others. Resolving here also proves the dispatch is
-        // device-free: this test searches on a machine with no GPU at all.
+        // device-free: this test runs on a machine with no GPU at all.
         for name in FORMATS {
             let format = format(name);
             let domain = domain_for(&format)?;
@@ -203,7 +203,7 @@ mod tests {
         // A GPU domain's construction stays device-free whether or not a device
         // is named: the engine initializes lazily on the first execute, so this
         // test — and `orchestrate`, which builds domains before any store
-        // mutation — searches on a machine with no GPU at all. The binding names a
+        // mutation — runs on a machine with no GPU at all. The binding names a
         // class that need not exist here; nothing resolves it until execute.
         let binding = DeviceBinding {
             class: DeviceClass::new("dead:beef").expect("class id"),

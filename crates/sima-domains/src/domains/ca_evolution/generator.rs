@@ -140,7 +140,7 @@ fn parse_count<M: CaModel>(table: &toml::Table) -> Result<u64> {
 /// The bound exists because the count arrives as decoded bytes and is what
 /// sizes the draw's allocations: a blob claiming 2^60 candidates would ask for
 /// that much memory before a single genome is sampled. A million candidates is
-/// far past any search this substrate searches and small enough that reserving for
+/// far past any search this substrate runs and small enough that reserving for
 /// it is ordinary.
 pub(crate) const MAX_CANDIDATES: u64 = 1_000_000;
 

@@ -310,7 +310,7 @@ mod tests {
     }
 
     #[test]
-    fn the_shared_parse_refuses_a_predicate_on_a_segmented_run() -> Result<()> {
+    fn the_shared_parse_refuses_a_predicate_on_a_segmented_search() -> Result<()> {
         // The rule the predicate carries, applied where the predicate is read
         // rather than at one caller: one params-carried predicate would gate
         // every segment identically and break the chain.
@@ -468,7 +468,7 @@ mod tests {
 
     #[test]
     fn translate_rejects_a_missing_shared_key_naming_it() {
-        // A missing required shared key surfaces before the model searches, naming
+        // A missing required shared key surfaces before the model runs, naming
         // the key. `snapshot_when` is optional, so its absence is not a fault.
         for key in ["width", "height", "steps", "dt"] {
             let mut table = params_table(FULL_PARAMS);
@@ -571,7 +571,7 @@ mod tests {
     }
 
     #[test]
-    fn translate_rejects_a_predicate_on_a_segmented_run() {
+    fn translate_rejects_a_predicate_on_a_segmented_search() {
         // A params-carried predicate would gate every segment identically; the
         // error states the constraint.
         match translate::<Toy>(&params_with_predicate("population", "0.5"), true) {

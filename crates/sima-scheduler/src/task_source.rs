@@ -58,7 +58,7 @@ pub trait TaskSource {
     fn prior_committed(&self) -> usize;
 }
 
-/// The construction prologue every task source shares: searches `generator` under
+/// The construction prologue every task source shares: runs `generator` under
 /// `config` and stores each spec object, returning each spec paired with its
 /// id. The spec object is durable before any task referencing it can commit;
 /// its address is the spec id (both are the blake3 of the spec's canonical
@@ -149,7 +149,7 @@ mod tests {
     }
 
     #[test]
-    fn a_spec_of_the_run_s_format_is_stored_and_addressed_by_its_bytes() -> Result<()> {
+    fn a_spec_of_the_search_s_format_is_stored_and_addressed_by_its_bytes() -> Result<()> {
         let dir = tempfile::tempdir().expect("temp dir");
         let store = Store::open(dir.path())?;
         let specs = generate_specs(&generator("stub.v1"), &config("stub.v1"), &store)?;

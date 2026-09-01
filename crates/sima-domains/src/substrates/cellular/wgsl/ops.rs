@@ -106,7 +106,7 @@ mod tests {
 
     #[test]
     fn enumeration_answers_on_a_machine_with_no_vulkan_device() {
-        // The probe the worker searches must answer rather than fail on a host
+        // The probe the worker runs must answer rather than fail on a host
         // whose Vulkan loader finds no driver, so the orchestrator reads "no
         // device" instead of a failed probe.
         WgslOps::enumerate_devices().expect("enumeration answers on any machine");

@@ -29,7 +29,7 @@ pub(crate) struct OwnedMachine<'a> {
     /// The ssh destination it is reached at, which is also the label its
     /// workers are journaled under.
     pub(crate) ssh: &'a str,
-    /// The container its workers search in.
+    /// The container its workers run in.
     pub(crate) container: &'a Container,
     /// Its worker layout.
     pub(crate) pool: &'a Pool,
@@ -50,7 +50,7 @@ pub(crate) struct Rental<'a> {
     pub(crate) fill: FillPolicy,
     /// Where each machine keeps what a search puts there.
     pub(crate) root: &'a str,
-    /// The `sima` binary on each machine, which searches the far half of whatever
+    /// The `sima` binary on each machine, which runs the far half of whatever
     /// this search delivers to it.
     pub(crate) binary: &'a str,
 }
@@ -138,7 +138,7 @@ mod tests {
     use super::*;
     use crate::fixtures::load_str;
 
-    /// A config whose orchestrator searches two workers, plus whatever `machines`
+    /// A config whose orchestrator runs two workers, plus whatever `machines`
     /// declares.
     fn config(machines: &str) -> LoadedConfig {
         load_str(&format!(

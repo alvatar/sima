@@ -1,4 +1,4 @@
-//! What compute devices a program can search on.
+//! What compute devices a program can run on.
 //!
 //! The domains layer is where the set of compiled-in execution backends is
 //! known, so it is where "what devices can be used" is answered for the layers
@@ -24,7 +24,7 @@ use sima_model::FormatId;
 
 pub use sima_contracts::{DeviceInfo, DeviceType};
 
-/// Every device the program bound to `format` can search on.
+/// Every device the program bound to `format` can run on.
 ///
 /// Resolving the format is what selects the enumeration: a domain carries the
 /// one its own execution backend supplies, so nothing above this crate has to
@@ -123,7 +123,7 @@ mod tests {
 
     #[test]
     fn enumeration_answers_on_a_machine_with_no_device_at_all() {
-        // No backend faults for want of a driver, so the probe the worker searches
+        // No backend faults for want of a driver, so the probe the worker runs
         // answers rather than failing, whichever program it is asked about.
         for name in [
             "stub.v1",

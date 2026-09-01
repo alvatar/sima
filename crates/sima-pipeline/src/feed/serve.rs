@@ -1,7 +1,7 @@
 //! [`follow_serve`]: the far half of the follow transport — a search's journal
 //! and lock state, written to a byte stream as [`FollowFrame`]s.
 //!
-//! It searches on the host the search's orchestrator searches on, where the config
+//! It runs on the host the search's orchestrator runs on, where the config
 //! resolves to a real store, the journal is a real file, and the search lock is
 //! an advisory lock the local kernel holds. It takes no lock and writes
 //! nothing: it is a [`SearchObserver`] with a wire on its output, so serving a
@@ -166,7 +166,7 @@ mod tests {
     }
 
     #[test]
-    fn a_run_never_started_is_served_as_a_fault() -> Result<()> {
+    fn a_search_never_started_is_served_as_a_fault() -> Result<()> {
         let dir = tempfile::tempdir().expect("temp dir");
         let config = served_config(dir.path());
         Store::open(dir.path().join("store"))?;

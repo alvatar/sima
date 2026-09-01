@@ -7,7 +7,7 @@
 //! of yours reaches it through the `ssh` and container-runtime stand-ins
 //! `common::machine_stubs` writes, which strip their own wrapping and search the
 //! command here. Every argv the pipeline builds is therefore the real one, and
-//! nothing needs a network, a GPU, or a namespace, so it searches in the ordinary
+//! nothing needs a network, a GPU, or a namespace, so it runs in the ordinary
 //! gate.
 //!
 //! The local halves are driven in-process, so the interrupt is raised from the
@@ -16,7 +16,7 @@
 //!
 //! The last test moves a search over a real ssh hop, against a throwaway server
 //! the test stands up and tears down. It needs no root, changes nothing outside
-//! its temporary directory, and searches in the ordinary gate, because an ssh path
+//! its temporary directory, and runs in the ordinary gate, because an ssh path
 //! nobody exercises is an ssh path nobody knows works.
 
 mod common;
@@ -99,7 +99,7 @@ fn migrating(dir: &Path, root: &Path, segments: u64, behaviors: &str) -> PathBuf
 }
 
 /// Drives the search `config` describes, interrupting once `stop_after` tasks have
-/// committed; `None` searches it to its end.
+/// committed; `None` runs it to its end.
 fn drive(config: &Path, stop_after: Option<usize>) -> Result<SearchOutcome> {
     let loaded = load(config)?;
     let interrupt = AtomicBool::new(false);
@@ -126,7 +126,7 @@ fn drive(config: &Path, stop_after: Option<usize>) -> Result<SearchOutcome> {
 
 /// Moves the search `config` describes onto its destination, discarding the
 /// records it forwards.
-fn move_run(config: &Path) -> Result<MigrateOutcome> {
+fn move_search(config: &Path) -> Result<MigrateOutcome> {
     let loaded = sima_pipeline::load(config)?;
     migrate(
         config,
@@ -192,7 +192,7 @@ const CHAINS: &str = r#""accumulate:2", "accumulate:2""#;
 
 /// The segment count of a search that cannot finish while a migration is
 /// watching its first record arrive. It pairs with [`PACED`]: the count alone
-/// is a bet on how fast a loaded machine searches, the sleep per segment is what
+/// is a bet on how fast a loaded machine runs, the sleep per segment is what
 /// bounds the chain in time.
 const UNFINISHABLE: u64 = 400;
 
@@ -214,7 +214,7 @@ fn far_binary() -> &'static str {
 }
 
 #[test]
-fn a_migrated_run_finalizes_to_the_manifest_an_uninterrupted_run_writes() -> Result<()> {
+fn a_migrated_search_finalizes_to_the_manifest_an_uninterrupted_search_writes() -> Result<()> {
     workers_built();
     let dir = tempfile::tempdir().expect("temp dir");
     let far_root = dir.path().join("far");
@@ -255,7 +255,7 @@ fn a_migrated_run_finalizes_to_the_manifest_an_uninterrupted_run_writes() -> Res
         before.len()
     );
 
-    let outcome = move_run(&migrated)?;
+    let outcome = move_search(&migrated)?;
     assert!(
         matches!(outcome, MigrateOutcome::Finalized { .. }),
         "the migration came home complete: {outcome:?}"
@@ -321,7 +321,7 @@ fn in_order(text: &str, lines: &[&str]) {
 }
 
 #[test]
-fn a_migration_narrates_the_phases_of_placing_the_run() -> Result<()> {
+fn a_migration_narrates_the_phases_of_placing_the_search() -> Result<()> {
     // Between the search id and the far search's first record a migration rents a
     // machine, waits for it to come up, and puts the search on it — minutes on a
     // real destination. Each phase says so as it begins, so an operator can
@@ -372,7 +372,8 @@ fn a_migration_narrates_the_phases_of_placing_the_run() -> Result<()> {
 }
 
 #[test]
-fn a_quiet_migration_prints_the_run_its_commits_and_its_outcome_and_nothing_else() -> Result<()> {
+fn a_quiet_migration_prints_the_search_its_commits_and_its_outcome_and_nothing_else() -> Result<()>
+{
     // The narration is for watching a placement happen; a script wants the
     // search's own progress and no more.
     workers_built();
@@ -439,7 +440,7 @@ fn a_migration_onto_a_machine_of_yours_narrates_the_phases_it_has() -> Result<()
 }
 
 #[test]
-fn a_second_migration_over_a_finished_run_finalizes_to_the_same_manifest() -> Result<()> {
+fn a_second_migration_over_a_finished_search_finalizes_to_the_same_manifest() -> Result<()> {
     workers_built();
     let dir = tempfile::tempdir().expect("temp dir");
     let far_root = dir.path().join("far");
@@ -449,7 +450,7 @@ fn a_second_migration_over_a_finished_run_finalizes_to_the_same_manifest() -> Re
         SearchOutcome::Interrupted { .. }
     ));
     assert!(matches!(
-        move_run(&migrated)?,
+        move_search(&migrated)?,
         MigrateOutcome::Finalized { .. }
     ));
     let manifest = manifest_bytes(&migrated).expect("a finalized manifest");
@@ -457,7 +458,7 @@ fn a_second_migration_over_a_finished_run_finalizes_to_the_same_manifest() -> Re
     // Re-running is the resume path: the frontier re-derives empty, the far
     // side has nothing to do, and the search re-finalizes to the same bytes.
     assert!(matches!(
-        move_run(&migrated)?,
+        move_search(&migrated)?,
         MigrateOutcome::Finalized { .. }
     ));
     assert_eq!(manifest_bytes(&migrated), Some(manifest));
@@ -524,7 +525,7 @@ fn a_migration_interrupted_during_the_follow_detaches_and_a_second_one_reattache
     // still reading its first record: every segment sleeps, so a hundred
     // seconds of far-side work remain when the interrupt lands, and the
     // outcome is decided by the interrupt rather than by a race with how
-    // fast this machine searches.
+    // fast this machine runs.
     let migrated = migrating(dir.path(), &far_root, UNFINISHABLE, PACED);
     assert!(matches!(
         drive(&migrated, Some(2))?,
@@ -655,7 +656,7 @@ fn an_exhausted_budget_winds_the_far_search_down_pulls_and_takes_the_machine_awa
         SearchOutcome::Interrupted { .. }
     ));
 
-    let outcome = move_run(&migrated)?;
+    let outcome = move_search(&migrated)?;
     assert!(
         matches!(outcome, MigrateOutcome::Interrupted { .. }),
         "the ceiling wound the search down: {outcome:?}"
@@ -702,7 +703,7 @@ fn migrating_under_ceiling(dir: &Path, root: &Path, ms: u64) -> PathBuf {
 /// rooted at `root`.
 ///
 /// The machine is reached through the stand-ins [`common::machine_stubs`]
-/// writes, so its workers search in a container the same way a real one's do and
+/// writes, so its workers run in a container the same way a real one's do and
 /// the far side is still this machine.
 fn owned(dir: &Path, root: &Path, segments: u64, behaviors: &str) -> PathBuf {
     config(
@@ -741,7 +742,7 @@ fn owned_under_ceiling(dir: &Path, root: &Path, ms: u64) -> PathBuf {
 }
 
 #[test]
-fn a_migrated_run_under_a_wall_clock_ceiling_winds_itself_down_on_the_far_side() -> Result<()> {
+fn a_migrated_search_under_a_wall_clock_ceiling_winds_itself_down_on_the_far_side() -> Result<()> {
     // The ceiling travels to a machine of yours, so the far search keeps it: the
     // chain has a hundred seconds of work left and the search ends anyway, on its
     // own.
@@ -771,7 +772,7 @@ fn a_migrated_run_under_a_wall_clock_ceiling_winds_itself_down_on_the_far_side()
 }
 
 #[test]
-fn a_detached_run_ends_on_its_own_ceiling_and_the_next_attach_brings_it_home() -> Result<()> {
+fn a_detached_search_ends_on_its_own_ceiling_and_the_next_attach_brings_it_home() -> Result<()> {
     // What bounds a search nobody is watching on a machine of yours: this side
     // lets go, and the far search's own ceiling is what ends it.
     workers_built();
@@ -819,7 +820,7 @@ fn a_detached_run_ends_on_its_own_ceiling_and_the_next_attach_brings_it_home() -
 }
 
 #[test]
-fn a_detached_run_on_a_rented_machine_carries_no_ceiling_and_keeps_computing() -> Result<()> {
+fn a_detached_search_on_a_rented_machine_carries_no_ceiling_and_keeps_computing() -> Result<()> {
     // A rental bills by the hour rather than by use, so a search that stops early
     // there saves nothing and leaves the worst state of all: a machine still
     // billing and no longer computing. The ceiling stays home — the far config
@@ -1043,7 +1044,7 @@ fn a_terminal_interrupt_detaches_the_migration_it_is_meant_to() -> Result<()> {
 }
 
 #[test]
-fn a_recall_ends_a_detached_run_and_brings_its_results_home() -> Result<()> {
+fn a_recall_ends_a_detached_search_and_brings_its_results_home() -> Result<()> {
     workers_built();
     let dir = tempfile::tempdir().expect("temp dir");
     let far_root = dir.path().join("far");
@@ -1149,7 +1150,7 @@ fn a_recall_of_a_far_search_that_failed_brings_the_failure_home() -> Result<()> 
     // The far search really fails: it is the migration that puts it there and the
     // far `sima search` that writes the failure into its own journal.
     let migrated = migrating(dir.path(), &far_root, SEGMENTS, REJECTED);
-    let outcome = move_run(&migrated)?;
+    let outcome = move_search(&migrated)?;
     assert!(
         matches!(outcome, MigrateOutcome::Failed { .. }),
         "the far search failed definitively: {outcome:?}"
@@ -1232,7 +1233,7 @@ impl Sshd {
             .port();
         let log = dir.join("sshd.log");
         let pid_file = dir.join("sshd.pid");
-        // `ForceCommand` searches through the login shell, whose word splitting is
+        // `ForceCommand` runs through the login shell, whose word splitting is
         // its own; routing the requested command through `/bin/sh -c` makes the
         // split POSIX whatever that shell is.
         let started = Command::new("/usr/sbin/sshd")
@@ -1374,7 +1375,7 @@ impl Drop for Sshd {
     }
 }
 
-/// The user the test searches as, which is the user its own server authenticates.
+/// The user the test runs as, which is the user its own server authenticates.
 /// The environment names it on an interactive machine and `id` names it
 /// everywhere else.
 fn whoami() -> String {
@@ -1419,7 +1420,7 @@ fn migrate_over(config: &Path, endpoint: &str, agent: &Path) -> Output {
 }
 
 #[test]
-fn a_run_migrated_over_a_real_ssh_hop_finalizes_and_the_server_saw_it() -> Result<()> {
+fn a_search_migrated_over_a_real_ssh_hop_finalizes_and_the_server_saw_it() -> Result<()> {
     workers_built();
     let dir = tempfile::tempdir().expect("temp dir");
     // The far side's `sima-worker` is found through the PATH the server sets
@@ -1535,7 +1536,7 @@ fn a_malformed_stub_endpoint_is_refused_by_name() -> Result<()> {
 
 #[test]
 fn the_harness_leaves_no_server_behind() {
-    // The guard is what makes the tier safe to search anywhere: a failing
+    // The guard is what makes the tier safe to run anywhere: a failing
     // assertion must not leave a listening server on the machine.
     workers_built();
     let dir = tempfile::tempdir().expect("temp dir");
@@ -1544,7 +1545,7 @@ fn the_harness_leaves_no_server_behind() {
         .expect("a binary directory");
     let pid = {
         let sshd = Sshd::start(dir.path(), binaries);
-        assert!(sshd.alive(), "the server searches while the test holds it");
+        assert!(sshd.alive(), "the server runs while the test holds it");
         sshd.pid
     };
     assert!(

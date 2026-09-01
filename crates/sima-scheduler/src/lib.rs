@@ -1,4 +1,4 @@
-//! The scheduler: it searches a search from `(SearchConfig, store state)`.
+//! The scheduler: it runs a search from `(SearchConfig, store state)`.
 //!
 //! A task source derives the runnable frontier — the tasks the store does not
 //! yet answer — and the driver hands each to a pool of worker processes over

@@ -110,11 +110,11 @@ struct Shared {
     /// chain it has handed out. Drained by the poll gate, so the list is the
     /// size of one poll's worth of settlements rather than the search's.
     settled_keys: Vec<TaskKey>,
-    /// The device class each chain's work searches on, seeded at search start from
+    /// The device class each chain's work runs on, seeded at search start from
     /// the store's placement slots and extended as chains bind. Empty and
     /// unread when the search has one implicit class.
     chains: HashMap<u64, DeviceClass>,
-    /// The class each chain-less task's attempts search on. A stateless task is a
+    /// The class each chain-less task's attempts run on. A stateless task is a
     /// chain of length one: its retries stick within the search, and once it
     /// commits there is nothing left to place — so this stays in memory and
     /// no slot is ever written for it.
@@ -224,7 +224,7 @@ impl Coordinator {
             .unwrap_or_else(|poison| poison.into_inner())
     }
 
-    /// Leases the next task the calling worker's `class` may search, inserting
+    /// Leases the next task the calling worker's `class` may run, inserting
     /// its lease and counting it in flight; returns `None` once the search is
     /// winding down and the calling worker should exit.
     ///
@@ -260,7 +260,7 @@ impl Coordinator {
         }
     }
 
-    /// Removes the first queued task `class` may search and records what that
+    /// Removes the first queued task `class` may run and records what that
     /// pull decided about its placement, or `None` when the queue holds
     /// nothing for this class.
     fn take_eligible(&self, shared: &mut Shared, class: Option<&DeviceClass>) -> Option<Leased> {
@@ -272,7 +272,7 @@ impl Coordinator {
                 placement: ChainPlacement::Settled,
             });
         };
-        // The scan searches over every pending task on every pull, so it borrows
+        // The scan runs over every pending task on every pull, so it borrows
         // each task's binding rather than cloning a class per entry.
         let position = shared.queue.iter().position(|pending| {
             !matches!(
@@ -405,7 +405,7 @@ impl Coordinator {
         } else if shared.queue.is_empty() && polled_at != Some(shared.settled) {
             // The gate ignores outstanding leases, so a chain task's successor
             // is handed out the moment its own predecessor commits, while other
-            // tasks still search.
+            // tasks still run.
             return Some(Gate::Poll {
                 idle: shared.leases.is_empty(),
                 settled: shared.settled,
@@ -597,7 +597,7 @@ mod tests {
 
     #[test]
     fn a_worker_passes_over_an_ineligible_task_to_a_later_eligible_one() {
-        // The queue is FIFO, but a worker takes the first task it may search, so
+        // The queue is FIFO, but a worker takes the first task it may run, so
         // one class's bound chain never blocks another class's work.
         let theirs = pending(Some(0), 1);
         let mine = pending(Some(1), 2);
@@ -746,7 +746,7 @@ mod tests {
     }
 
     #[test]
-    fn a_wound_down_run_yields_its_terminal_reason_once() {
+    fn a_wound_down_search_yields_its_terminal_reason_once() {
         // The driver takes the reason by value and leaves `Finished` behind,
         // which is the signal every worker's next_task exits on — so a second
         // look yields the sentinel rather than the reason again.
@@ -763,7 +763,7 @@ mod tests {
     }
 
     #[test]
-    fn a_wound_down_run_holding_a_lease_is_not_terminal_yet() {
+    fn a_wound_down_search_holding_a_lease_is_not_terminal_yet() {
         // The in-flight attempt has to settle first, or the driver would
         // return while a worker still holds a task.
         let coordinator = Coordinator::new();
@@ -850,7 +850,7 @@ mod tests {
     }
 
     #[test]
-    fn a_run_fault_upgrades_without_touching_leases() {
+    fn a_search_fault_upgrades_without_touching_leases() {
         let coordinator = Coordinator::new();
         coordinator.lock().leases.insert(a_key());
         coordinator.fault_search(Error::Transport("spawn failed".to_string()));
@@ -862,7 +862,7 @@ mod tests {
     }
 
     #[test]
-    fn a_run_fault_never_displaces_an_earlier_fault() {
+    fn a_search_fault_never_displaces_an_earlier_fault() {
         let coordinator = coordinator_with(SearchState::Fault(Error::Corruption(
             "first fault".to_string(),
         )));

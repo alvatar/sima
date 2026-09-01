@@ -26,8 +26,8 @@
 //! # Tests
 //!
 //! Tests split by whether they touch a real device. Compilation and identity
-//! tests search anywhere; tests that create a [`Context`] need a Vulkan device.
-//! Both search under a plain `cargo test`, so the device path is exercised on
+//! tests run anywhere; tests that create a [`Context`] need a Vulkan device.
+//! Both run under a plain `cargo test`, so the device path is exercised on
 //! every machine that has one and a device fault surfaces as a test failure
 //! rather than a skipped test.
 //!

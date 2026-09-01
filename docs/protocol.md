@@ -4,7 +4,7 @@ sima runs a program as its own process and talks to it over that process's
 stdin and stdout. This document is the contract: framing, canonical encoding,
 the two message sets, and the obligations a program takes on. **Speaking it is
 the whole requirement for building for sima.** A program in any language that
-frames these bytes plugs into a run; an SDK is a convenience over the same
+frames these bytes plugs into a search; an SDK is a convenience over the same
 bytes.
 
 Two implementations of the program side live in this repository, and the Rust
@@ -19,12 +19,12 @@ The protocol version is 1.
 
 ## The two roles
 
-One binary answers both conversations a run needs of it, and the argument
+One binary answers both conversations a search needs of it, and the argument
 vector says which:
 
 - **worker** — the process was spawned with no `--serve-domain` flag. It
   executes tasks over the worker protocol. The orchestrator spawns one process
-  per worker slot, for the life of a run.
+  per worker slot, for the life of a search.
 - **domain service** — the argument vector carries `--serve-domain <format>`.
   The process answers questions about that one format, over the domain-service
   protocol. The orchestrator opens one session per configured format when a
@@ -47,7 +47,7 @@ zero.
 - A **domain-service session** stays open for the whole configuration, so a
   program that loads assets or opens a device pays that cost once. `Goodbye`
   ends it, and the program exits without answering.
-- A **worker session** stays open for the run. After the handshake the program
+- A **worker session** stays open for the search. After the handshake the program
   executes one assignment after another until stdin closes.
 
 Frames travel on stdin (parent to program) and stdout (program to parent) only.
@@ -136,21 +136,21 @@ What each question asks for:
 - `EnumerateDevices` — the devices the format's work can run on, as the
   program's execution backend enumerates them. A format that opens no device
   answers an empty list.
-- `TranslateConfig` — the run's `[run.params]` section, to be translated into
-  the format's canonical params bytes. The segmented flag says whether the run
+- `TranslateConfig` — the search's `[search.params]` section, to be translated into
+  the format's canonical params bytes. The segmented flag says whether the search
   divides each candidate's evaluation into a chain of segments, so a program
   can refuse a combination it does not support.
-- `TranslateGeneratorConfig` — the `[run.generator]` section minus its `id`
+- `TranslateGeneratorConfig` — the `[search.generator]` section minus its `id`
   key, translated into the generator's opaque params blob.
 
-- `Generate` — the run's candidate specs, from the named generator, under the
-  run's root seed and the blob the previous question produced.
+- `Generate` — the search's candidate specs, from the named generator, under the
+  search's root seed and the blob the previous question produced.
 
 Both translations receive the section's **body**, re-serialized as TOML: the
-keys and their values, without the `[run.params]` or `[run.generator]` header
-line. A run that states no such section sends an empty string. The bytes a
+keys and their values, without the `[search.params]` or `[search.generator]` header
+line. A search that states no such section sends an empty string. The bytes a
 translation answers are opaque to sima — it stores them, hashes them into the
-run's identity, and hands the params bytes back verbatim in every `Assign`.
+search's identity, and hands the params bytes back verbatim in every `Assign`.
 
 Device type tags: `0` discrete, `1` integrated, `2` virtual, `3` cpu, `4`
 other.
@@ -291,14 +291,14 @@ Both roles carry one version, because one binary answers both.
 The parent refuses a `Ready` whose program digest is not the one it sent, in
 either direction: a digest other than the one stated, no digest where one was
 stated, and a digest where none was. Each says the machine runs a program other
-than the one this run put there, and the refusal names both values. A program's
+than the one this search put there, and the refusal names both values. A program's
 whole part is the echo — answering the variable it was given makes it right by
 construction, and answering a computed value of its own makes it wrong.
 
 ## Obligations
 
 Beyond the message layouts, a program takes on the following. They are what
-makes a run reproducible; a program that breaks one produces results sima
+makes a search reproducible; a program that breaks one produces results sima
 cannot stand behind.
 
 ### Determinism
@@ -314,7 +314,7 @@ cannot stand behind.
 
 ### Segments and the state artifact
 
-A run may divide each candidate's evaluation into a chain of $N$ tasks. Every
+A search may divide each candidate's evaluation into a chain of $N$ tasks. Every
 segment of a chain carries the same seed, and each hop works as follows:
 
 - Segment 0 receives no input state.
@@ -322,8 +322,8 @@ segment of a chain carries the same seed, and each hop works as follows:
 - The parent addresses that artifact and hands its bytes to the next segment as
   the `Assign` input state.
 
-A segmented run over a program that never commits `state` fails on the parent
-as a validation error naming the artifact. An unsegmented run's tasks are
+A segmented search over a program that never commits `state` fails on the parent
+as a validation error naming the artifact. An unsegmented search's tasks are
 stateless: they receive no input state and need commit no `state` artifact.
 
 ### A program computes no ids
@@ -339,7 +339,7 @@ owes an answer it will not give.
 
 `Generate` is the one question with no bound: generation is computation
 proportional to the batch, so a deadline sized for answers would kill a
-legitimate large batch. A runaway generator is interrupted the way any run is.
+legitimate large batch. A runaway generator is interrupted the way any search is.
 
 The worker handshake is bounded the same way. Execution of an assignment is
 not: a task runs as long as it runs.
@@ -384,10 +384,10 @@ Worker:
 - `Panicked` — definitive; the task is never retried, exactly as `Done`
   rejected. A program that panics reports it as a `Panicked` frame rather than
   dying, and may precede it with an `Event` carrying the diagnostic.
-- `Fault` — an infrastructure failure, which fails the run.
+- `Fault` — an infrastructure failure, which fails the search.
 - `Save` — persisted into the task's checkpoint slot, or dropped when the task
   selected none.
-- `Event` — parsed and forwarded to the run's collector, which journals it. It
+- `Event` — parsed and forwarded to the search's collector, which journals it. It
   never decides the conversation's fate: an event that fails to parse is
   dropped.
 - a broken pipe or a torn frame — the attempt fails transiently, and the parent

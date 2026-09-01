@@ -1,7 +1,7 @@
 //! The child side of the domain service: [`serve`] answers what a format
 //! binds.
 //!
-//! `serve` is what a program searches for the life of a session: read the
+//! `serve` is what a program runs for the life of a session: read the
 //! [`ToDomain::Hello`], answer [`FromDomain::Ready`], then answer one question
 //! after another until the parent says goodbye or closes the pipe. The components
 //! are built before the session opens, so a program that loads assets or opens

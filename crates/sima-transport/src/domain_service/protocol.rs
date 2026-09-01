@@ -64,7 +64,7 @@ pub enum ToDomain {
         /// The format asked about.
         format: FormatId,
     },
-    /// What devices the format's work can search on.
+    /// What devices the format's work can run on.
     EnumerateDevices {
         /// The format asked about.
         format: FormatId,
@@ -116,7 +116,7 @@ pub enum FromDomain {
         /// The format's environment.
         environment: Environment,
     },
-    /// The devices the format's work can search on; empty for a format that opens
+    /// The devices the format's work can run on; empty for a format that opens
     /// none.
     EnumeratedDevices {
         /// The devices, as the program's execution backend enumerates them.

@@ -25,7 +25,7 @@ pub(crate) struct Destination<'a> {
     /// The entry that declared it, for errors and for the far-side directory's
     /// diagnostics.
     pub(crate) name: &'a str,
-    /// How the machine is obtained and what it searches.
+    /// How the machine is obtained and what it runs.
     pub(crate) form: &'a HostForm,
     /// Where the search's directory goes on that machine.
     pub(crate) root: &'a str,

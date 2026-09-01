@@ -8,7 +8,7 @@
 //! a device machine with no container runtime and no remote.
 //!
 //! **Tier A — a container pool on this machine, no ssh.** The acceptance
-//! scenarios search against the real sima image over a local container runtime:
+//! scenarios run against the real sima image over a local container runtime:
 //! an `[orchestrator]` naming an `image`, so the worker pool's transport is
 //! `podman search --rm -i --name <name> <run_args> <image> sima-worker` with no ssh
 //! prefix — every layer of the container-worker mechanism except the ssh hop,
@@ -30,7 +30,7 @@
 //!   cargo test -p sima --test remote
 //! ```
 //!
-//! The environment configures the container pool so one suite searches against a
+//! The environment configures the container pool so one suite runs against a
 //! local runtime, a provisioned localhost, or a real remote unchanged:
 //!
 //! - `SIMA_TEST_IMAGE` — the sima image; unset skips Tier A, and defaults to
@@ -38,7 +38,7 @@
 //! - `SIMA_TEST_REMOTE` — the ssh destination; unset skips Tier B.
 //! - `SIMA_TEST_RUNTIME` — `docker` or `podman`; defaults to `podman` locally,
 //!   `docker` across ssh.
-//! - `SIMA_TEST_RUN_ARGS` — space-separated container-search flags for GPU access;
+//! - `SIMA_TEST_RUN_ARGS` — space-separated container-run flags for GPU access;
 //!   defaults to `--device nvidia.com/gpu=all` locally, `--gpus all` across ssh.
 
 mod common;
@@ -54,12 +54,12 @@ use common::{
 };
 use sima_pipeline::Event;
 
-/// The candidates and segments every remote test searches. Sized like the device
+/// The candidates and segments every remote test runs. Sized like the device
 /// suite so several chains outnumber the workers and both pools pull work.
 const CANDIDATES: u32 = 12;
 const SEGMENTS: u64 = 3;
 
-/// The container pool the environment names: where its container searches, the
+/// The container pool the environment names: where its container runs, the
 /// image, the runtime, and its GPU-access search flags. `host` is `None` for a
 /// local runtime (Tier A), where the pool is the orchestrator's own, and the ssh
 /// destination for a remote (Tier B), where it is a declared host.
@@ -149,7 +149,7 @@ impl ContainerEnv {
     }
 
     /// A command over the pool's runtime with `args`, ssh-wrapped when the pool
-    /// searches across a host — the same carrier the transport uses, so the test's
+    /// runs across a host — the same carrier the transport uses, so the test's
     /// second-channel kill reaches the same containers.
     fn runtime_command(&self, args: &[&str]) -> Command {
         match &self.host {
@@ -297,11 +297,11 @@ mod on_device {
     // ---------------------------------------------------------------------------
 
     /// A container pool spread over two device classes commits from both, and no
-    /// chain splits across the class boundary. The pool searches on this machine, so the
+    /// chain splits across the class boundary. The pool runs on this machine, so the
     /// journal cannot tell its classes apart by host; commits on both prove both
     /// were scheduled onto.
     #[test]
-    fn a_two_class_container_run_commits_from_both_classes() {
+    fn a_two_class_container_search_commits_from_both_classes() {
         let env = local_or_skip!();
         let dir = tempfile::tempdir().expect("temp dir");
         let config = write_config_text(
@@ -451,7 +451,7 @@ mod on_device {
     /// from both, and no chain splits. Here the pools sit on different machines, so
     /// the journal names the local pool and the ssh host separately.
     #[test]
-    fn a_mixed_local_and_ssh_run_commits_from_both_pools() {
+    fn a_mixed_local_and_ssh_search_commits_from_both_pools() {
         let env = remote_or_skip!();
         let host = env.host.clone().expect("Tier B names an ssh host");
         let dir = tempfile::tempdir().expect("temp dir");

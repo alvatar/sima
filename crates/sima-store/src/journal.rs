@@ -70,7 +70,7 @@ impl Store {
             Err(e) if e.kind() == ErrorKind::NotFound => return Ok((Vec::new(), 0)),
             Err(e) => return Err(io_error(&path, e)),
         };
-        // The read below searches to the file's end, so only a regular file — a
+        // The read below runs to the file's end, so only a regular file — a
         // thing with an extent — is readable; a special file in the journal's
         // place (a device, a pipe) would be read forever and is refused
         // instead.
@@ -223,7 +223,7 @@ mod tests {
     }
 
     #[test]
-    fn a_run_with_no_journal_file_reads_empty() -> Result<()> {
+    fn a_search_with_no_journal_file_reads_empty() -> Result<()> {
         let (_dir, store) = temp_store();
         let search = created_search(&store)?;
         assert_eq!(store.journal(&search)?, Vec::<String>::new());

@@ -263,7 +263,7 @@ fn composition_label(device: &str, host: &str) -> String {
 /// Computes the status of the search a loaded config describes, from its
 /// journal alone — the read-only counterpart of
 /// [`orchestrate`](crate::orchestrate). Every line is replayed through
-/// [`SearchStatus::apply`], the same method the tui searches over the live event
+/// [`SearchStatus::apply`], the same method the tui runs over the live event
 /// stream, so a resumed search and a first search derive their state one way. The
 /// journal is read under the guards every read-only query applies: a missing
 /// store root and a search never started there are
@@ -429,7 +429,7 @@ mod tests {
     }
 
     #[test]
-    fn a_run_never_driven_in_an_existing_store_seeds_a_zeroed_status() -> Result<()> {
+    fn a_search_never_driven_in_an_existing_store_seeds_a_zeroed_status() -> Result<()> {
         // The store is there because another search used it; this search has no
         // journal in it, which is the same absence.
         let dir = tempfile::tempdir().expect("temp dir");
@@ -541,7 +541,7 @@ mod tests {
     }
 
     #[test]
-    fn run_level_events_set_the_terminal_state() {
+    fn search_level_events_set_the_terminal_state() {
         let mut finalized = SearchStatus::new(search_id());
         finalized.apply(&rec(Event::SearchFinalized {
             search: "00".repeat(32),

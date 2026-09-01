@@ -1,7 +1,7 @@
 //! [`ContainerTransport`]: a worker inside a container the transport launches,
 //! here or across an ssh hop.
 //!
-//! The worker searches inside a container the transport launches with
+//! The worker runs inside a container the transport launches with
 //! `<runtime> search --rm -i --name <container> <run_args> <image> <command>`,
 //! where the command is the image's own `sima-worker` or a program delivered
 //! to the machine — see [`ContainerRun`].
@@ -42,7 +42,7 @@ pub struct ContainerTransport {
     host: Option<String>,
     /// The container runtime client: `docker` or `podman`.
     runtime: String,
-    /// The worker image to search.
+    /// The worker image to run.
     image: String,
     /// Verbatim flags for the container-search command — GPU access and the like,
     /// stated by config rather than guessed by the transport.
@@ -50,7 +50,7 @@ pub struct ContainerTransport {
     /// The stem every spawn's container name derives from; the pipeline makes
     /// it unique to the search and pool.
     container_prefix: String,
-    /// What each spawn's container searches: the image's own worker, or the program
+    /// What each spawn's container runs: the image's own worker, or the program
     /// delivered to this machine, with whatever that needs mounted and
     /// forwarded.
     search: ContainerRun,
@@ -265,10 +265,10 @@ pub(crate) fn kill_argv(host: Option<&str>, runtime: &str, container: &str) -> V
     argv
 }
 
-/// What a container searches, and what it must see to search it.
+/// What a container runs, and what it must see to run it.
 ///
-/// A search whose format this build carries searches the image's own worker and needs
-/// nothing mounted. A search whose format is a program outside this build searches
+/// A search whose format this build carries runs the image's own worker and needs
+/// nothing mounted. A search whose format is a program outside this build runs
 /// that program out of the machine's own filesystem, which the container has to
 /// be given: the mount is stated as `<path>:<path>`, the identical path on both
 /// sides, so a path naming a file outside names the same file inside — which is
@@ -278,10 +278,10 @@ pub struct ContainerRun {
     /// Bind mounts, each already in the runtime's `<host>:<container>` form.
     mounts: Vec<String>,
     /// Variable names forwarded from the machine's own environment. Only the
-    /// names travel: the runtime reads each value where the container searches, so
+    /// names travel: the runtime reads each value where the container runs, so
     /// no value ever appears on a command line or crosses the wire.
     env: Vec<String>,
-    /// The command the container searches, from its program onward.
+    /// The command the container runs, from its program onward.
     command: Vec<String>,
 }
 
@@ -321,7 +321,7 @@ impl ContainerRun {
     }
 }
 
-/// The argv that searches one command in a throwaway container, ssh-wrapped when
+/// The argv that runs one command in a throwaway container, ssh-wrapped when
 /// `host` is set: `[ssh …] <runtime> search --rm -i [-v <mount>…] <run_args>
 /// <image> <command…>`.
 ///
@@ -349,9 +349,9 @@ pub fn once_argv(
     argv
 }
 
-/// The argv that searches the one-shot enumeration probe in a throwaway container:
+/// The argv that runs the one-shot enumeration probe in a throwaway container:
 /// [`once_argv`] over the image's own worker and whatever [`DeviceProbe`] asks.
-/// The orchestrator searches it at search start to resolve a remote's device
+/// The orchestrator runs it at search start to resolve a remote's device
 /// selectors.
 pub fn probe_argv(
     host: Option<&str>,
@@ -370,7 +370,7 @@ pub fn probe_argv(
 }
 
 /// The argv that checks a worker image is present, ssh-wrapped when `host` is
-/// set: `[ssh …] <runtime> image inspect <image>`. The orchestrator searches it
+/// set: `[ssh …] <runtime> image inspect <image>`. The orchestrator runs it
 /// before spawning a container pool, so a missing image is a clean error rather
 /// than a hanging handshake.
 pub fn image_inspect_argv(host: Option<&str>, runtime: &str, image: &str) -> Vec<String> {
@@ -399,7 +399,7 @@ fn ssh_prefix(host: Option<&str>) -> Vec<String> {
 /// back so the caller can reap it rather than orphaning it.
 ///
 /// A spawn failure is `None` and is ignored by the caller — the local kill and
-/// the container's `--rm` are the fallback if the second channel cannot search.
+/// the container's `--rm` are the fallback if the second channel cannot run.
 fn spawn_detached(argv: &[String]) -> Option<Child> {
     let (program, args) = argv.split_first()?;
     own_process_group(&mut Command::new(program))
@@ -418,7 +418,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_local_run_command_omits_the_ssh_prefix() {
+    fn a_local_search_command_omits_the_ssh_prefix() {
         let argv = run_argv(
             None,
             "podman",
@@ -478,7 +478,7 @@ mod tests {
 
     #[test]
     fn a_worker_run_of_a_delivered_program_mounts_it_and_forwards_its_variables() {
-        // A machine that received a program searches it out of its own filesystem,
+        // A machine that received a program runs it out of its own filesystem,
         // so the tree is mounted; the entry's variables are forwarded by name,
         // so each value is that machine's own and none reaches a command line.
         let argv = run_argv(
@@ -571,7 +571,7 @@ mod tests {
     }
 
     #[test]
-    fn the_probe_command_appends_enumerate_after_the_run_args() {
+    fn the_probe_command_appends_enumerate_after_the_search_args() {
         let argv = probe_argv(
             Some("gpubox"),
             "docker",

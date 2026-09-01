@@ -93,7 +93,7 @@ fn re_evaluation_finalizes_again_without_touching_an_executor() -> Result<()> {
 }
 
 #[test]
-fn a_builtin_format_run_binds_no_program() -> Result<()> {
+fn a_builtin_format_search_binds_no_program() -> Result<()> {
     // A format this build carries is answered in process, so there is no
     // program to bind: the search journals no binding, and the resume gate has
     // nothing to compare whatever the invocation says.
@@ -122,7 +122,7 @@ fn a_builtin_format_run_binds_no_program() -> Result<()> {
 }
 
 #[test]
-fn a_rejected_candidate_fails_the_run_and_status_carries_the_reason() -> Result<()> {
+fn a_rejected_candidate_fails_the_search_and_status_carries_the_reason() -> Result<()> {
     let dir = tempfile::tempdir().expect("temp dir");
     let config = loaded(dir.path(), r#""succeed", "reject""#, 1)?;
 
@@ -275,7 +275,7 @@ fn an_undispatchable_config_orchestrates_to_validation_without_touching_the_stor
 }
 
 #[test]
-fn status_on_a_never_started_run_is_validation() -> Result<()> {
+fn status_on_a_never_started_search_is_validation() -> Result<()> {
     let dir = tempfile::tempdir().expect("temp dir");
     let config = loaded(dir.path(), r#""succeed""#, 1)?;
     // The store exists — created here — but the search was never driven.
@@ -299,7 +299,7 @@ fn status_on_a_missing_store_is_validation_and_creates_nothing() -> Result<()> {
 }
 
 #[test]
-fn a_run_with_nowhere_to_execute_is_a_validation_error_before_the_store() -> Result<()> {
+fn a_search_with_nowhere_to_execute_is_a_validation_error_before_the_store() -> Result<()> {
     // An orchestrator that declares no worker layout has nothing to execute on
     // by itself. Without the flag the error names it, since engaging the fleet
     // is what would give the search somewhere to go; with the flag, and a fleet

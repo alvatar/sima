@@ -87,7 +87,7 @@ impl Hello {
     ///
     /// The worker id and device are left unbound: they vary per worker, so
     /// each spawn sets them on a copy of this frame.
-    pub fn for_run(
+    pub fn for_search(
         format: FormatId,
         checkpoint_interval: Duration,
         checkpoint_interval_steps: Option<NonZeroU64>,
@@ -162,7 +162,7 @@ pub enum ToParent {
         /// hash cannot see across machines of one class, carried so the journal
         /// makes a cross-machine divergence diagnosable.
         driver: String,
-        /// The digest of the program this child searches, lowercase hex, verbatim
+        /// The digest of the program this child runs, lowercase hex, verbatim
         /// from [`PROGRAM_DIGEST_VAR`]; empty when the spawn stated none. The
         /// child reports it and never computes it, so what this carries is the
         /// spawner's own claim coming back for comparison.

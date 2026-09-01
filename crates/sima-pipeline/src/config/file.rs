@@ -53,7 +53,7 @@ pub(super) struct DomainSection {
     /// resolved against the config file's directory. Absent means the program
     /// is this machine's alone.
     pub(super) payload: Option<String>,
-    /// The shell script the destination searches to turn the payload into the
+    /// The shell script the destination runs to turn the payload into the
     /// program it spawns; optional for a single-file payload, required for a
     /// directory.
     pub(super) install: Option<String>,

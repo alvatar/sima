@@ -177,7 +177,7 @@ mod tests {
     }
 
     #[test]
-    fn a_driven_run_journals_every_key_it_comprises() -> Result<()> {
+    fn a_driven_search_journals_every_key_it_comprises() -> Result<()> {
         // The claim the store-addressed sync rests on: what a side that cannot
         // load a config derives from the journal is what a side that can
         // derives from the config.
@@ -197,7 +197,7 @@ mod tests {
     }
 
     #[test]
-    fn a_run_stopped_partway_journals_the_keys_it_reached() -> Result<()> {
+    fn a_search_stopped_partway_journals_the_keys_it_reached() -> Result<()> {
         // The shape a far search that was wound down leaves: the journal names
         // what it worked on, which is exactly what it has state for.
         let dir = tempfile::tempdir().expect("temp dir");
@@ -223,7 +223,7 @@ mod tests {
     }
 
     #[test]
-    fn a_run_that_journaled_nothing_names_no_key() -> Result<()> {
+    fn a_search_that_journaled_nothing_names_no_key() -> Result<()> {
         // What a store about to take its first push holds.
         let dir = tempfile::tempdir().expect("temp dir");
         let store = Store::open(dir.path())?;
@@ -269,7 +269,7 @@ mod tests {
     }
 
     #[test]
-    fn a_run_level_event_names_no_key() -> Result<()> {
+    fn a_search_level_event_names_no_key() -> Result<()> {
         // The events that frame the search rather than a task carry no key to
         // advertise, so nothing derives one from them.
         let dir = tempfile::tempdir().expect("temp dir");

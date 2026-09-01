@@ -53,7 +53,7 @@ fn the_observer_mirrors_the_journal() -> Result<()> {
 /// and the journal closes with `search_interrupted`. A following clean search
 /// finalizes to a manifest identical to an uninterrupted reference search's.
 #[test]
-fn an_interrupt_mid_run_drains_and_stays_resumable() -> Result<()> {
+fn an_interrupt_mid_search_drains_and_stays_resumable() -> Result<()> {
     // The sleeps keep several tasks in flight when the first commit lands,
     // and outlast the driver's interrupt-poll interval so the flag is
     // observed while work is still leased.

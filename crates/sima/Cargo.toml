@@ -36,7 +36,7 @@ sima-domains = { path = "../sima-domains" }
 libc.workspace = true
 tempfile.workspace = true
 
-# The crash harness searches only with the injection points compiled in.
+# The crash harness runs only with the injection points compiled in.
 [[test]]
 name = "crash"
 required-features = ["crash-injection"]

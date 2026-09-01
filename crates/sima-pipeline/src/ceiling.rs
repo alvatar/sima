@@ -11,7 +11,7 @@
 //! ceiling therefore bounds unattended computing per launch, which is what a
 //! search nobody is watching needs: it ends on its own.
 //!
-//! **A search has a ceiling only where no bill searches against its time.** A local
+//! **A search has a ceiling only where no bill runs against its time.** A local
 //! search and a machine of yours keep one; a rented destination is never sent the
 //! key, because a rental bills by the hour rather than by use and a search stopped
 //! early there saves nothing while leaving a machine that bills and computes
@@ -32,7 +32,7 @@ use crate::rental::StopSignal;
 
 /// Runs `body` under `limit`, and reports whether the ceiling fired.
 ///
-/// A `limit` of `None` is a search stating no ceiling: `body` searches with nothing
+/// A `limit` of `None` is a search stating no ceiling: `body` runs with nothing
 /// watching it and the answer is always `false`. Otherwise a thread waits out
 /// what is left of the ceiling and raises `interrupt` when it elapses; `body`
 /// returning wakes it, so a search that finishes first costs one parked thread.
@@ -118,7 +118,7 @@ mod tests {
     }
 
     #[test]
-    fn a_ceiling_that_elapses_raises_the_flag_the_run_winds_down_on() {
+    fn a_ceiling_that_elapses_raises_the_flag_the_search_winds_down_on() {
         let interrupt = AtomicBool::new(false);
         let (out, fired) = under_ceiling(Some(Duration::from_millis(20)), &interrupt, || {
             // The body watches the same flag a search's driver watches.
@@ -132,7 +132,7 @@ mod tests {
     }
 
     #[test]
-    fn a_run_stating_no_ceiling_is_watched_by_nothing() {
+    fn a_search_stating_no_ceiling_is_watched_by_nothing() {
         let interrupt = AtomicBool::new(false);
         let (out, fired) = under_ceiling(None, &interrupt, || 1);
         assert_eq!(out, 1);

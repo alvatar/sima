@@ -62,7 +62,7 @@ pub(crate) trait DomainSource: Send + Sync {
     /// The environment the format's results depend on.
     fn environment(&self, format: &FormatId) -> Result<Environment>;
 
-    /// The devices the format's work can search on.
+    /// The devices the format's work can run on.
     fn enumerate_devices(&self, format: &FormatId) -> Result<Vec<DeviceInfo>>;
 
     /// The `[search.params]` section, as text, translated into the canonical
@@ -178,7 +178,7 @@ impl BinarySource {
             sdk,
             sdk_path,
         } = entry;
-        // The build about to serve this config, digested before it searches. The
+        // The build about to serve this config, digested before it runs. The
         // digest is provenance every session journals, so an unreadable
         // program fails registration here, naming the path.
         let digest = hash_bytes(&std::fs::read(&binary).map_err(|source| Error::Io {
@@ -385,7 +385,7 @@ pub(crate) struct RoutedProgram<'a> {
     pub(crate) payload: Option<&'a PayloadSpec>,
     /// The variable names the entry declared. They travel to a far entry by
     /// name alone, as they are written here: each value comes from the machine
-    /// the program searches on.
+    /// the program runs on.
     pub(crate) env: &'a [String],
     /// The SDK the entry declared, which travels to a far entry as the same
     /// declaration: the package itself is the destination binary's to vend.
@@ -765,7 +765,7 @@ mod tests {
     fn a_binary_whose_bytes_cannot_be_read_names_itself() {
         // A program sima cannot digest is a program whose provenance a search
         // could not record, so the config fails to resolve rather than running
-        // with a build nothing identifies. Execute permission alone searches a
+        // with a build nothing identifies. Execute permission alone runs a
         // binary but does not read it.
         use std::os::unix::fs::PermissionsExt;
 

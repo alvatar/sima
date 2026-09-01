@@ -70,7 +70,7 @@ pub fn serve(domain: &dyn Domain, generators: &[&dyn Generator]) -> Result<()> {
     match Role::from_args(std::env::args())? {
         Role::Execute => {
             // Panic messages and backtraces latch for the serve loop's
-            // correlated diagnostics; the process's own hook still searches after
+            // correlated diagnostics; the process's own hook still runs after
             // the capture.
             host::capture_panics();
             host::serve(stdin.lock(), stdout.lock(), &|format, device| {

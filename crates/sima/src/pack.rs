@@ -12,7 +12,7 @@
 //! search knowledge and works on a store whose config files are long gone.
 //!
 //! `--gc` additionally deletes everything outside the finalized searches'
-//! closures, unfinalized searches and their directories included, and it searches
+//! closures, unfinalized searches and their directories included, and it runs
 //! before the packing so that an orphan is unlinked rather than packed and
 //! then rewritten away. Beside an active search the sweep destroys that search's
 //! work; the operator owns that decision, which is why it is a flag and not
@@ -42,7 +42,7 @@ pub(crate) fn pack_command(store: &Path, gc: bool) -> ExitCode {
     }
 }
 
-/// Opens the store and searches the phases the invocation asked for, in the
+/// Opens the store and runs the phases the invocation asked for, in the
 /// order that does the least work: the sweep first, so an orphan is
 /// unlinked where it lies instead of being packed and then rewritten out of
 /// the pack it just entered. The store both orders leave behind is the
@@ -105,7 +105,7 @@ mod tests {
         assert_eq!(byte_size(1023), "1023 B");
         assert_eq!(byte_size(1024), "1.0 KiB");
         assert_eq!(byte_size(15_246_562_099), "14.2 GiB");
-        // The largest unit holds, however far past it the count searches.
+        // The largest unit holds, however far past it the count runs.
         assert_eq!(byte_size(u64::MAX), "16777216.0 TiB");
     }
 

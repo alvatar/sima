@@ -2,7 +2,7 @@
 //!
 //! Every live view of a search — the tui and `follow` — consumes one
 //! [`SearchFeed`]. [`LocalFeed`] follows a search on this machine; the remote
-//! implementation follows one on the host its orchestrator searches on, over the
+//! implementation follows one on the host its orchestrator runs on, over the
 //! stream [`protocol`] defines. The view loop is the same either way.
 
 mod local;

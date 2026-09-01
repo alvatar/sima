@@ -47,7 +47,7 @@ pub(crate) const STAMP_FILE: &str = "installed.digest";
 /// Held while building, so concurrent loaders build one tree between them.
 const LOCK_FILE: &str = ".lock";
 
-/// The mode a file that searches is written under.
+/// The mode a file that runs is written under.
 pub(crate) const EXECUTABLE_MODE: u32 = 0o755;
 /// The mode every other written file gets.
 pub(crate) const REGULAR_MODE: u32 = 0o644;
@@ -168,7 +168,7 @@ pub(crate) fn validate_path(path: &str) -> Result<()> {
     Ok(())
 }
 
-/// Whether `path` is a file this machine can search.
+/// Whether `path` is a file this machine can run.
 pub(crate) fn executable(path: &Path) -> Result<bool> {
     match std::fs::metadata(path) {
         Ok(metadata) => Ok(metadata.is_file() && metadata.permissions().mode() & 0o111 != 0),

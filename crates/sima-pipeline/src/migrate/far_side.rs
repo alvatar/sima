@@ -11,7 +11,7 @@
 //! two destination forms differ only in how they were obtained: a machine of
 //! yours at the ssh destination its entry names, a rented one at the endpoint
 //! its provider reported — or, for the stub provider, at a `sima` on this
-//! machine, so every layer above searches with no network.
+//! machine, so every layer above runs with no network.
 //!
 //! **Far-side paths travel unresolved.** `~/sima` is the far shell's to
 //! expand, so a destination's `root` reaches the shell unquoted and must be a
@@ -143,7 +143,7 @@ pub(crate) enum Contact {
 /// the two forms do differently.
 enum Readiness {
     /// A machine of yours: the worker image its entry names must be present on
-    /// it, since that is where its far-side workers search.
+    /// it, since that is where its far-side workers run.
     Image {
         /// The ssh destination the image is inspected over.
         host: String,
@@ -234,7 +234,7 @@ impl Remote {
             // terminal as it happens.
             .stderr(Stdio::inherit())
             .spawn()
-            .map_err(|e| Error::Transport(format!("cannot search {program:?} on {label}: {e}")))?;
+            .map_err(|e| Error::Transport(format!("cannot run {program:?} on {label}: {e}")))?;
         child
             .stdin
             .take()
@@ -650,7 +650,7 @@ mod tests {
 
     /// The arguments the recording stand-in was started with, waited for: the
     /// start returns when the shell that backgrounded it does, which is before
-    /// the job itself has search.
+    /// the job itself has run.
     fn recorded_argv(dir: &Path) -> String {
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
@@ -722,7 +722,7 @@ mod tests {
         Ok(())
     }
 
-    /// Polls `far` until nothing is driving it, or the wait searches out.
+    /// Polls `far` until nothing is driving it, or the wait runs out.
     fn until_gone(far: &Remote) -> Result<Option<u32>> {
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
@@ -735,7 +735,7 @@ mod tests {
     }
 
     #[test]
-    fn placing_creates_the_run_s_directory_and_writes_its_config() -> Result<()> {
+    fn placing_creates_the_search_s_directory_and_writes_its_config() -> Result<()> {
         let dir = tempfile::tempdir().expect("temp dir");
         let far = here(dir.path(), Path::new("/bin/true"));
         far.place("[search]\nroot_seed = 1\n")?;
@@ -793,7 +793,7 @@ mod tests {
     }
 
     #[test]
-    fn a_started_run_reports_its_pid_until_it_ends() -> Result<()> {
+    fn a_started_search_reports_its_pid_until_it_ends() -> Result<()> {
         let dir = tempfile::tempdir().expect("temp dir");
         // Long enough that the assertions below race nothing, and detached, so
         // the test's own exit does not depend on it.
@@ -828,7 +828,7 @@ mod tests {
     }
 
     #[test]
-    fn a_run_that_ended_before_the_signal_is_not_a_failure() -> Result<()> {
+    fn a_search_that_ended_before_the_signal_is_not_a_failure() -> Result<()> {
         // The window between the wind-down's poll and its signal: the search the
         // signal wanted gone is gone, which is the outcome, not a fault.
         let dir = tempfile::tempdir().expect("temp dir");

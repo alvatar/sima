@@ -61,7 +61,7 @@ fn deserialize_value<'de, D: Deserializer<'de>>(deserializer: D) -> Result<f64, 
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum Event {
     /// The search began, over `tasks` keys: every task key of the search, those
-    /// already committed and those still to search. `committed` is how many of
+    /// already committed and those still to run. `committed` is how many of
     /// them the store already answered when the session started; it comes
     /// from the records, so it holds even against this journal, which a crash
     /// can leave short of the commits it describes.
@@ -133,9 +133,9 @@ pub enum Event {
     /// A worker's child reported the device it computes on, at every spawn and
     /// respawn. The device name and driver version are the child's own,
     /// verbatim; a domain that uses no device reports both empty. The host is
-    /// the parent's account of where the worker's pool searches — empty for a local
+    /// the parent's account of where the worker's pool runs — empty for a local
     /// slot, the configured destination for a remote one. The program is the
-    /// digest the child answered for the program it searches, verbatim like the
+    /// digest the child answered for the program it runs, verbatim like the
     /// device and driver beside it; absent for a format this build answers, to
     /// which no program travelled.
     WorkerBound {

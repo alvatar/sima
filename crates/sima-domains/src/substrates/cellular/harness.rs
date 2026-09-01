@@ -178,7 +178,7 @@ pub(crate) fn search<'a, O: CellularOps>(
 /// when it exceeds what the device launches.
 ///
 /// The dispatch is one-dimensional, so every cell rides the x axis and a large
-/// grid searches into the axis limit long before it searches out of memory: Vulkan
+/// grid runs into the axis limit long before it runs out of memory: Vulkan
 /// guarantees only 65535 groups there, which a 2048x2048 grid already exceeds.
 /// Spreading the excess onto y would change how a kernel derives a cell index
 /// from its invocation, and with it every task key, so the limit is reported
@@ -244,7 +244,7 @@ mod tests {
 
     /// Stepping a grid dispatches a kernel, which needs a real device. The
     /// harness is one implementation, so each case is written once over the ops
-    /// boundary and search against both backends.
+    /// boundary and run against both backends.
     mod on_device {
         use super::*;
         use crate::substrates::cellular::cuda::CudaOps;

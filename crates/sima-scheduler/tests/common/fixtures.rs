@@ -187,7 +187,7 @@ pub fn task_classes(events: &[Event]) -> HashMap<String, Vec<String>> {
 
 /// A loopback transport hosting `resolver`'s executor for `cfg`'s format
 /// under `exec`'s checkpoint cadence: the real wire protocol and host loop
-/// over in-memory pipes, so these tests search the full scheduler without
+/// over in-memory pipes, so these tests run the full scheduler without
 /// processes.
 fn loopback(
     cfg: &SearchConfig,

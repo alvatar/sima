@@ -16,7 +16,7 @@ use crate::config::LoadedConfig;
 ///
 /// Observation is read-only: the observer never takes the search lock and never
 /// writes the store. Polling is the contract — the caller decides the
-/// cadence, and the observer searches no thread of its own.
+/// cadence, and the observer runs no thread of its own.
 pub struct SearchObserver {
     store: Store,
     search: SearchId,
@@ -144,7 +144,7 @@ mod tests {
     }
 
     #[test]
-    fn a_malformed_journal_line_is_corruption_naming_the_run() -> Result<()> {
+    fn a_malformed_journal_line_is_corruption_naming_the_search() -> Result<()> {
         let (_dir, store, search, loaded) = created_store()?;
         let mut writer = store.journal_writer(&search)?;
         writer.append("not a lifecycle event")?;

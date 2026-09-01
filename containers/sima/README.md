@@ -4,10 +4,10 @@ A stateless executor host. It runs `sima-worker` as its entrypoint and speaks
 the framed stdio protocol over the container's stdin/stdout, so the
 orchestrator drives it exactly as a local worker — `docker run --rm -i` (or
 `podman run --rm -i`) is the whole invocation. The image carries no store and
-no run state; every task input and output crosses the pipe.
+no search state; every task input and output crosses the pipe.
 
 `sima` is on the path beside the worker, because a machine rented to host a
-migrated run drives it from inside this image: the far side runs `sima run`
+migrated search drives it from inside this image: the far side runs `sima search`
 there, and answers `sima sync-serve` and `sima follow-serve` over the hop the
 migration arrived on. A machine of yours does not need it — its own `sima` runs
 outside the container, on the machine itself — but one image serves both, so
@@ -74,7 +74,7 @@ podman run --rm -i --device nvidia.com/gpu=all localhost/sima:latest \
 ```
 
 `--enumerate` prints one JSON device per line and exits; it is the probe the
-orchestrator runs to resolve a machine's device selectors. It takes the run's
+orchestrator runs to resolve a machine's device selectors. It takes the search's
 format id, because that names the execution backend to enumerate and a backend
 reaches only the devices its own driver stack exposes.
 

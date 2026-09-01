@@ -3,7 +3,7 @@
 //!
 //! Adding a model is a new module under `models/` plus one arm in each match
 //! here; the generic machinery never changes. Each arm names both the model and
-//! the backend it searches on, because a model declares no engine — a rule ported
+//! the backend it runs on, because a model declares no engine — a rule ported
 //! to a second backend is a second arm beside the first, and a mismatched
 //! pairing is visible on one line.
 
@@ -21,7 +21,7 @@ use crate::substrates::cellular::{CellularEngine, CudaEngine, WgslEngine};
 /// Resolves a format id to one of this domain's models, or `None` if no model
 /// claims it.
 ///
-/// Each arm names both the model and the backend it searches on: the model
+/// Each arm names both the model and the backend it runs on: the model
 /// declares no engine, so a rule ported to a second backend is a second arm
 /// beside the first, and a mismatched pairing is visible on one line.
 pub(crate) fn domain_for(format: &FormatId) -> Option<Result<Box<dyn Domain>>> {

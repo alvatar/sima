@@ -7,7 +7,7 @@
 //!
 //! Two callers reach it. A migration syncs a search's records and objects with the
 //! store on its destination; a fleet delivery sends a program's objects to a
-//! machine that is about to search it. Both spawn a far `sima`, both drive
+//! machine that is about to run it. Both spawn a far `sima`, both drive
 //! [`Store::sync`] as the initiator, and both need the same reaping.
 
 use std::io::{BufReader, BufWriter};
@@ -17,7 +17,7 @@ use sima_core::{Error, Result, own_process_group};
 use sima_model::TaskKey;
 use sima_store::{ObjectScope, Store, SyncReport, SyncRole};
 
-/// Spawns `argv` and searches one sync session against it as the initiator,
+/// Spawns `argv` and runs one sync session against it as the initiator,
 /// advertising `keys` under `scope`.
 ///
 /// Stderr is inherited rather than captured, so a far-side diagnostic — a
@@ -36,7 +36,7 @@ pub(crate) fn sync_against(
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
         .spawn()
-        .map_err(|e| Error::Transport(format!("cannot search {program:?} to sync: {e}")))?;
+        .map_err(|e| Error::Transport(format!("cannot run {program:?} to sync: {e}")))?;
     // The pipes exist iff the spawn configured them; taking them cannot fail
     // past a successful spawn.
     let (Some(stdin), Some(stdout)) = (child.stdin.take(), child.stdout.take()) else {

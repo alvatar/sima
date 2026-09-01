@@ -3,7 +3,7 @@
 //!
 //! A substrate is the state shape and the dispatch machinery a family of rules
 //! shares — distinct from the execution backend (Host, Wgsl, Cuda), which is
-//! the engine that searches the dispatch. Where several domains would build their
+//! the engine that runs the dispatch. Where several domains would build their
 //! executors on the same structural kind, that kind lives here rather than
 //! inside any one domain. Today that is the [`cellular`] substrate — the grid
 //! state, the double-buffered dispatch harness, and the `CellularEngine` boundary

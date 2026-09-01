@@ -1,10 +1,10 @@
 //! End-to-end acceptance of a migrated search whose format is served by a program
 //! of its own: the program travels to the destination as objects, installs
-//! itself there, searches the search, and the results come home.
+//! itself there, runs the search, and the results come home.
 //!
 //! The far side is the real `sima` binary, reached through the stub provider,
 //! whose machines are local subprocesses. Nothing here needs a network, a GPU,
-//! an ssh hop, or a container, so it searches in the ordinary gate. The program is
+//! an ssh hop, or a container, so it runs in the ordinary gate. The program is
 //! a wrapper around the built `sima-worker`, which answers for the in-tree
 //! formats over exactly the protocol a program outside this workspace speaks.
 //!
@@ -108,7 +108,7 @@ fn imported_from(resolved: &Path) -> Vec<String> {
         .collect()
 }
 
-/// Asserts `python3` searches.
+/// Asserts `python3` runs.
 ///
 /// The one test here that imports the vended SDK requires it, and a machine
 /// without it fails naming what is missing rather than reporting a green suite
@@ -120,7 +120,7 @@ fn require_python3() {
     match version {
         Ok(output) if output.status.success() => {}
         other => panic!(
-            "this test drives a Python program, so python3 is required and must search: {other:?}"
+            "this test drives a Python program, so python3 is required and must run: {other:?}"
         ),
     }
 }
@@ -152,7 +152,7 @@ fn wrapper(path: &Path, marker: &str) -> PathBuf {
 enum Shape {
     /// One file, which is its own entry point: no install script is needed.
     File,
-    /// A directory, whose install script decides which of its files searches.
+    /// A directory, whose install script decides which of its files runs.
     Directory,
 }
 
@@ -231,7 +231,7 @@ fn drive(config: &Path) -> Result<SearchOutcome> {
 }
 
 /// Drives the search `config` describes, interrupting once `stop_after` tasks
-/// have committed; `None` searches it to its end.
+/// have committed; `None` runs it to its end.
 fn drive_stopping(config: &Path, stop_after: Option<usize>) -> Result<SearchOutcome> {
     let loaded = load(config)?;
     let interrupt = AtomicBool::new(false);
@@ -257,7 +257,7 @@ fn drive_stopping(config: &Path, stop_after: Option<usize>) -> Result<SearchOutc
 }
 
 /// Moves the search `config` describes onto its destination.
-fn move_run(config: &Path, accept: BinaryChange) -> Result<MigrateOutcome> {
+fn move_search(config: &Path, accept: BinaryChange) -> Result<MigrateOutcome> {
     let loaded = load(config)?;
     migrate(
         config,
@@ -347,7 +347,7 @@ fn installs(path: &Path) -> usize {
 #[test]
 fn a_program_served_search_executes_on_its_destination_and_comes_home_complete() -> Result<()> {
     // The milestone in one test: the program travels as objects, installs
-    // itself on the destination, searches the search there, and the store that
+    // itself on the destination, runs the search there, and the store that
     // comes home is byte-identical to one this machine produced alone.
     let dir = tempfile::tempdir().expect("temp dir");
     let far_root = dir.path().join("far");
@@ -373,7 +373,7 @@ fn a_program_served_search_executes_on_its_destination_and_comes_home_complete()
         "where a format is answered from is operational, so it is one search"
     );
 
-    let outcome = move_run(&migrated, BinaryChange::Refuse)?;
+    let outcome = move_search(&migrated, BinaryChange::Refuse)?;
     assert!(
         matches!(outcome, MigrateOutcome::Finalized { .. }),
         "the migration came home complete: {outcome:?}"
@@ -417,7 +417,7 @@ fn a_single_file_payload_needs_no_install_script_to_travel() -> Result<()> {
     let migrated = migrating(&migrated_dir, &far_root, &entry);
 
     assert!(matches!(
-        move_run(&migrated, BinaryChange::Refuse)?,
+        move_search(&migrated, BinaryChange::Refuse)?,
         MigrateOutcome::Finalized { .. }
     ));
     let far = far_dir(&migrated, &far_root);
@@ -433,7 +433,7 @@ fn a_single_file_payload_needs_no_install_script_to_travel() -> Result<()> {
 }
 
 #[test]
-fn the_run_a_migration_drives_is_the_run_this_machine_would_have_driven() -> Result<()> {
+fn the_search_a_migration_drives_is_the_search_this_machine_would_have_driven() -> Result<()> {
     // Identity, stated over both halves: the search id and every task key are the
     // same whether the program answers here or on the destination.
     let dir = tempfile::tempdir().expect("temp dir");
@@ -449,7 +449,7 @@ fn the_run_a_migration_drives_is_the_run_this_machine_would_have_driven() -> Res
     let migrated_entry = program(&migrated_dir, Shape::Directory, "one", &installs_at);
     let migrated = migrating(&migrated_dir, &far_root, &migrated_entry);
     assert!(matches!(
-        move_run(&migrated, BinaryChange::Refuse)?,
+        move_search(&migrated, BinaryChange::Refuse)?,
         MigrateOutcome::Finalized { .. }
     ));
 
@@ -474,7 +474,7 @@ fn a_second_migration_of_an_unchanged_payload_installs_nothing() -> Result<()> {
     let migrated = migrating(&migrated_dir, &far_root, &entry);
 
     assert!(matches!(
-        move_run(&migrated, BinaryChange::Refuse)?,
+        move_search(&migrated, BinaryChange::Refuse)?,
         MigrateOutcome::Finalized { .. }
     ));
     assert_eq!(installs(&installs_at), 1, "the destination built it once");
@@ -482,7 +482,7 @@ fn a_second_migration_of_an_unchanged_payload_installs_nothing() -> Result<()> {
     // The search is complete, so the second migration starts a far search that has
     // nothing to compute — and nothing to install either.
     assert!(matches!(
-        move_run(&migrated, BinaryChange::Refuse)?,
+        move_search(&migrated, BinaryChange::Refuse)?,
         MigrateOutcome::Finalized { .. }
     ));
     assert_eq!(installs(&installs_at), 1, "and did not build it again");
@@ -503,7 +503,7 @@ fn a_changed_payload_reaches_the_destination_and_stops_at_its_binding_guard() ->
     let entry = program(&migrated_dir, Shape::Directory, "one", &installs_at);
     let migrated = migrating(&migrated_dir, &far_root, &entry);
     assert!(matches!(
-        move_run(&migrated, BinaryChange::Refuse)?,
+        move_search(&migrated, BinaryChange::Refuse)?,
         MigrateOutcome::Finalized { .. }
     ));
     let first = far_bindings(&migrated, &far_root);
@@ -512,7 +512,7 @@ fn a_changed_payload_reaches_the_destination_and_stops_at_its_binding_guard() ->
     // The program is edited here. Its declarations are unchanged, so the search
     // id and every task key stand; what changed is the build that computes.
     program(&migrated_dir, Shape::Directory, "two", &installs_at);
-    let error = move_run(&migrated, BinaryChange::Refuse)
+    let error = move_search(&migrated, BinaryChange::Refuse)
         .expect_err("the far binding guard refused the changed program");
 
     // The edit travelled and was installed, and the guard refused it — which
@@ -543,7 +543,7 @@ fn a_changed_payload_reaches_the_destination_and_stops_at_its_binding_guard() ->
 
     // With the acceptance, the far search binds the new build and drives on.
     assert!(matches!(
-        move_run(&migrated, BinaryChange::Accept)?,
+        move_search(&migrated, BinaryChange::Accept)?,
         MigrateOutcome::Finalized { .. }
     ));
     let accepted = far_bindings(&migrated, &far_root);
@@ -569,7 +569,7 @@ fn a_program_served_migration_winds_down_on_its_ceiling_and_brings_home_what_ran
     let migrated_dir = dir.path().join("migrated");
     // A chain the far side cannot reach the end of while this migration is
     // still reading its first record: every segment sleeps, so the outcome is
-    // decided by the wind-down rather than by how fast this machine searches.
+    // decided by the wind-down rather than by how fast this machine runs.
     let entry = program(&migrated_dir, Shape::Directory, "one", &installs_at);
     let migrated = write(
         &migrated_dir,
@@ -620,7 +620,7 @@ fn a_program_served_migration_winds_down_on_its_ceiling_and_brings_home_what_ran
     assert!(!before.is_empty(), "the local search committed something");
 
     let loaded = load(&migrated)?;
-    let outcome = move_run(&migrated, BinaryChange::Refuse)?;
+    let outcome = move_search(&migrated, BinaryChange::Refuse)?;
     assert!(
         matches!(outcome, MigrateOutcome::Interrupted { .. }),
         "a wound-down migration is resumable, not finalized: {outcome:?}"
@@ -632,7 +632,7 @@ fn a_program_served_migration_winds_down_on_its_ceiling_and_brings_home_what_ran
     assert_eq!(
         installs(&installs_at),
         1,
-        "the destination installed the program it needed to search at all"
+        "the destination installed the program it needed to run at all"
     );
 
     // The results that existed still do.
@@ -677,7 +677,7 @@ fn a_program_written_against_the_sdk_finds_it_on_the_destination() -> Result<()>
     let migrated = migrating(&migrated_dir, &far_root, &entry);
 
     assert!(matches!(
-        move_run(&migrated, BinaryChange::Refuse)?,
+        move_search(&migrated, BinaryChange::Refuse)?,
         MigrateOutcome::Finalized { .. }
     ));
 
@@ -732,7 +732,7 @@ fn every_far_worker_answers_the_program_the_migration_sent() -> Result<()> {
     let migrated = migrating(&migrated_dir, &far_root, &entry);
 
     assert!(matches!(
-        move_run(&migrated, BinaryChange::Refuse)?,
+        move_search(&migrated, BinaryChange::Refuse)?,
         MigrateOutcome::Finalized { .. }
     ));
 
@@ -750,7 +750,7 @@ fn every_far_worker_answers_the_program_the_migration_sent() -> Result<()> {
 }
 
 #[test]
-fn a_local_run_of_a_program_this_machine_holds_binds_no_program_digest() -> Result<()> {
+fn a_local_search_of_a_program_this_machine_holds_binds_no_program_digest() -> Result<()> {
     // The other presence direction, end to end: nothing travelled, so nothing
     // is stated to the workers, the wire field crosses empty, and the journal
     // records no digest.
@@ -807,7 +807,7 @@ fn a_destination_running_another_program_fails_the_spawn_naming_both_digests() -
         "[domain.\"stub.v1\"]\nbinary = \"./program.sh\"\npayload = \"./program.sh\"\n",
     );
 
-    let outcome = move_run(&migrated, BinaryChange::Refuse)?;
+    let outcome = move_search(&migrated, BinaryChange::Refuse)?;
     assert!(
         matches!(outcome, MigrateOutcome::Outstanding { .. }),
         "no worker took a task, so the search came home with all of them: {outcome:?}"
@@ -857,7 +857,7 @@ fn an_install_that_fails_on_the_destination_states_its_own_last_words() -> Resul
          payload = \"./src\"\ninstall = \"./install.sh\"\n",
     );
 
-    let error = move_run(&migrated, BinaryChange::Refuse)
+    let error = move_search(&migrated, BinaryChange::Refuse)
         .expect_err("an install that fails fails the migration");
     let text = error.to_string();
     assert!(text.contains("\"far\""), "names the machine: {text}");
@@ -929,7 +929,7 @@ fn a_format_this_build_carries_no_code_for_migrates_onto_a_rented_machine() -> R
     let root = tempfile::tempdir().expect("temp dir");
     let config = migrating_unknown_format(&dir.path().join("near"), root.path());
 
-    let outcome = move_run(&config, BinaryChange::Refuse)?;
+    let outcome = move_search(&config, BinaryChange::Refuse)?;
     assert!(
         matches!(outcome, MigrateOutcome::Finalized { .. }),
         "{outcome:?}"

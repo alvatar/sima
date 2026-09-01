@@ -9,7 +9,7 @@
 //! from (config, store state): no key list travels and the protocol is
 //! unchanged.
 //!
-//! Every test here searches in the ordinary gate: the far half is a subprocess on
+//! Every test here runs in the ordinary gate: the far half is a subprocess on
 //! this machine, with no ssh hop and no network.
 
 mod common;
@@ -105,7 +105,7 @@ fn keys_of(config: &Path) -> Result<Vec<TaskKey>> {
 }
 
 #[test]
-fn a_push_lands_the_run_and_the_far_side_derives_the_same_frontier() -> Result<()> {
+fn a_push_lands_the_search_and_the_far_side_derives_the_same_frontier() -> Result<()> {
     // A finished search pushed into an empty store: every record travels, and the
     // far side ends deriving from its own config exactly the set this side
     // does — which is what makes the transfer complete rather than merely
@@ -122,7 +122,7 @@ fn a_push_lands_the_run_and_the_far_side_derives_the_same_frontier() -> Result<(
 }
 
 #[test]
-fn a_pull_brings_home_a_run_only_the_far_side_drove() -> Result<()> {
+fn a_pull_brings_home_a_search_only_the_far_side_drove() -> Result<()> {
     // The direction the verb exists for, and the one that rests on the far
     // side's own key set: it derives from its journal what it holds, and a
     // near side that holds none of it takes the whole search in one session.
@@ -206,7 +206,7 @@ fn a_search_id_that_is_not_one_surfaces_as_a_failure() {
 }
 
 #[test]
-fn a_store_serving_a_run_it_never_held_advertises_nothing() -> Result<()> {
+fn a_store_serving_a_search_it_never_held_advertises_nothing() -> Result<()> {
     // What a fresh push finds: no journal on the far side is an empty key set,
     // so the far half advertises nothing and takes everything offered.
     let dir = tempfile::tempdir().expect("temp dir");

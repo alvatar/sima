@@ -17,7 +17,7 @@ use crate::spec::SpecId;
 pub struct TaskIdentity {
     /// The candidate under evaluation.
     pub spec: SpecId,
-    /// The search parameters the evaluation searches under.
+    /// The search parameters the evaluation runs under.
     pub params: ParamsId,
     /// The task's deterministic seed.
     pub seed: u64,

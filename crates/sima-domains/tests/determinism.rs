@@ -19,7 +19,7 @@ use sima_model::{ArtifactRef, EnvironmentId, Params, TaskIdentity, TaskRecord};
 /// The per-task `seed` here derives from the root seed as a stand-in for the
 /// scheduler's real derivation; the point is only that it is fixed
 /// across searches, so any search-to-search difference would come from the domain.
-fn run_digest(attempt: u32, worker: WorkerId) -> Result<Hash> {
+fn execution_digest(attempt: u32, worker: WorkerId) -> Result<Hash> {
     let generator = StubGenerator::new()?;
     let executor = StubExecutor::new()?;
     let root_seed = 0x0ABC_D123_4567_89AB_u64;
@@ -83,15 +83,21 @@ fn run_digest(attempt: u32, worker: WorkerId) -> Result<Hash> {
 }
 
 #[test]
-fn run_is_deterministic() -> Result<()> {
-    assert_eq!(run_digest(0, WorkerId(0))?, run_digest(0, WorkerId(0))?);
+fn execution_is_deterministic() -> Result<()> {
+    assert_eq!(
+        execution_digest(0, WorkerId(0))?,
+        execution_digest(0, WorkerId(0))?
+    );
     Ok(())
 }
 
 #[test]
-fn run_digest_is_independent_of_execution_context() -> Result<()> {
+fn execution_digest_is_independent_of_execution_context() -> Result<()> {
     // Same committed digest whether every task ran on its first attempt and
     // worker 0, or a later attempt on a different worker.
-    assert_eq!(run_digest(0, WorkerId(0))?, run_digest(7, WorkerId(3))?);
+    assert_eq!(
+        execution_digest(0, WorkerId(0))?,
+        execution_digest(7, WorkerId(3))?
+    );
     Ok(())
 }

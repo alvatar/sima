@@ -71,7 +71,7 @@ fn changes(store: &Store, cfg: &SearchConfig) -> Vec<(String, String, String, St
 /// emits one `DriverChanged` naming both versions, and the search still
 /// finalizes: the driver is provenance, never an admission gate.
 #[test]
-fn a_changed_driver_is_journaled_and_the_run_proceeds() -> Result<()> {
+fn a_changed_driver_is_journaled_and_the_search_proceeds() -> Result<()> {
     let (_dir, store) = temp_store();
     let cfg = config(7, vec![StubBehavior::Succeed]);
     seed_bound(&store, &cfg, "", "stub gpu", "570.86.15")?;
@@ -123,7 +123,7 @@ fn the_journaled_driver_stays_silent() -> Result<()> {
 /// A fresh search has no journaled driver to differ from, so its first session
 /// emits nothing whatever its workers report.
 #[test]
-fn a_fresh_run_emits_no_change() -> Result<()> {
+fn a_fresh_search_emits_no_change() -> Result<()> {
     let (_dir, store) = temp_store();
     let cfg = config(7, vec![StubBehavior::Succeed]);
 

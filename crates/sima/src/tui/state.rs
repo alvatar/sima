@@ -273,7 +273,7 @@ impl TuiState {
                 }
                 None => {
                     // A search starts from idle or after a terminal state; while
-                    // one searches the key does nothing.
+                    // one runs the key does nothing.
                     if matches!(self.activity, Activity::Idle | Activity::Ended) {
                         self.activity = Activity::Running;
                         self.start_pending = true;
@@ -500,7 +500,7 @@ mod tests {
     }
 
     #[test]
-    fn an_idle_session_shows_idle_workers_and_start_requests_a_run() {
+    fn an_idle_session_shows_idle_workers_and_start_requests_a_search() {
         let mut state = idle(2);
         let view = state.view();
         assert_eq!(view.state, "idle");
@@ -578,7 +578,7 @@ mod tests {
     }
 
     #[test]
-    fn quit_while_running_stops_and_leaves_once_the_run_returns() {
+    fn quit_while_running_stops_and_leaves_once_the_search_returns() {
         let mut state = idle(1);
         state.handle(Msg::Key(KeyAction::Start));
         let _ = state.take_start();
@@ -593,7 +593,7 @@ mod tests {
     }
 
     #[test]
-    fn force_quit_leaves_at_once_and_reports_interrupted_mid_run() {
+    fn force_quit_leaves_at_once_and_reports_interrupted_mid_search() {
         let mut state = idle(1);
         state.handle(Msg::Key(KeyAction::Start));
         let _ = state.take_start();

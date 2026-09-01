@@ -628,7 +628,7 @@ mod tests {
 
     #[test]
     fn the_binding_pre_pass_keeps_each_workers_last_device_and_host() {
-        // A local worker names no host; a remote one names the machine it searches
+        // A local worker names no host; a remote one names the machine it runs
         // on; and a worker that spawned again is known by what its later child
         // reported.
         let bound = worker_bindings(&[
@@ -650,7 +650,7 @@ mod tests {
     #[test]
     fn a_worker_binding_after_the_lease_still_joins() -> Result<()> {
         // A resumed search leases before its workers restate their bindings; the
-        // binding pass searches first, so the join holds either way.
+        // binding pass runs first, so the join holds either way.
         let history = history_of(
             &[
                 leased("aa", 0, 0, 10),
@@ -806,7 +806,7 @@ mod tests {
     }
 
     #[test]
-    fn a_run_that_committed_everything_has_no_failures() -> Result<()> {
+    fn a_search_that_committed_everything_has_no_failures() -> Result<()> {
         let (_dir, config) = journal_with(&[leased("aa", 0, 0, 10), committed("aa", 20)])?;
         assert!(failures_records(&crate::journal::records(&config)?).is_empty());
         Ok(())

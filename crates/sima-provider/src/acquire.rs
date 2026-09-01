@@ -7,7 +7,7 @@
 //! and a machine taken past it is paid for only to be found late at its first
 //! status call.
 //!
-//! Taking an offer is where the ledger is written, and acquisitions search at once
+//! Taking an offer is where the ledger is written, and acquisitions run at once
 //! over one store; the gate the caller supplies keeps those writes off each
 //! other, while the wait for a machine to come up stays outside it.
 
@@ -33,7 +33,7 @@ use crate::reputation::{IncidentKind, excluded_machines, record_incident};
 pub static UNREPORTED: &(dyn Fn(&Offer) + Sync) = &|_: &Offer| ();
 
 /// An acquisition nobody can call off: what a caller with no wind-down to
-/// observe passes as `cancel`. The flag is never set, so the walk searches to its
+/// observe passes as `cancel`. The flag is never set, so the walk runs to its
 /// own conclusion, and it is behind a call because nothing outside may reach
 /// the flag to set it.
 pub fn never_cancelled() -> &'static AtomicBool {
@@ -45,9 +45,9 @@ pub fn never_cancelled() -> &'static AtomicBool {
 ///
 /// Taking an offer is all the ledger writing an acquisition does — the orphan
 /// reap that opens a walk, the budget read against the ledger, and the intent
-/// and live records for the machine — and acquisitions that search at once share
+/// and live records for the machine — and acquisitions that run at once share
 /// the store those land in. Only the take is under the gate: the wait for the
-/// machine to come up is where the minutes go, and it searches outside, which is
+/// machine to come up is where the minutes go, and it runs outside, which is
 /// the whole point of holding one.
 ///
 /// A caller acquiring alone builds its own and contends with nobody.
@@ -75,7 +75,7 @@ impl Admission {
 pub struct AcquireLimits {
     /// When the machine must be usable by. A deadline rather than a duration,
     /// because the readiness wait is one stage of a longer wait for the same
-    /// machine — a caller that goes on to reach it searches that under this same
+    /// machine — a caller that goes on to reach it runs that under this same
     /// deadline, so the machine gets one budget rather than one per stage.
     pub usable_by: Instant,
     /// How long to wait between status calls.
@@ -135,11 +135,11 @@ static NONCE: LazyLock<String> = LazyLock::new(|| {
 /// `taken` is called with each offer a machine has been provisioned against,
 /// before the wait for that machine to come up: it is where a caller says what
 /// is now being paid for, which is the one thing an operator cannot see while
-/// the wait searches. A walk whose first machine goes gone calls it again for the
+/// the wait runs. A walk whose first machine goes gone calls it again for the
 /// next offer it takes. A caller with nothing to say passes [`UNREPORTED`].
 ///
 /// `admission` serializes the ledger-writing half of this against every other
-/// acquisition holding the same gate, so acquisitions search concurrently over one
+/// acquisition holding the same gate, so acquisitions run concurrently over one
 /// store without racing on it. The readiness wait is deliberately outside it.
 #[allow(clippy::too_many_arguments)]
 pub fn acquire<'a, P: Provider + ?Sized>(
@@ -376,9 +376,9 @@ fn take<P: Provider + ?Sized>(
 /// reached and the numbers behind it.
 ///
 /// The comparison is against what stands now: how long the rental being
-/// admitted will search is unknowable here, so nothing is projected. Bounding
+/// admitted will run is unknowable here, so nothing is projected. Bounding
 /// how far a running fleet may overshoot is the work of the caller that
-/// polls [`assess`] while the fleet searches.
+/// polls [`assess`] while the fleet runs.
 fn admit(store: &Store, owner: &SearchId, budget: &Budget) -> Result<()> {
     match assess(store, owner, budget, now_ms())? {
         Verdict::Within { .. } => Ok(()),
@@ -472,7 +472,7 @@ fn record(
     }
 }
 
-/// The tag one acquisition attempt searches under:
+/// The tag one acquisition attempt runs under:
 /// `sima-<owner16>-<pid>-<rand8hex>-<seq>`. It is both the ledger key and the
 /// provider-side label, so the machine and its record carry one name. The
 /// owner's first 16 hex characters keep it short enough for provider label
@@ -1335,7 +1335,7 @@ mod tests {
     }
 
     #[test]
-    fn a_record_of_the_acquiring_run_survives_the_acquire_time_reconcile() -> Result<()> {
+    fn a_record_of_the_acquiring_search_survives_the_acquire_time_reconcile() -> Result<()> {
         let (_dir, store) = temp_store();
         let stub = StubProvider::new(vec![stub_offer("cheap", 100_000)])
             .with_instance(InstanceId("held".to_string()), "sima-tag-0");
@@ -1344,7 +1344,7 @@ mod tests {
             live_state("held"),
             sample_search(7),
         ))?;
-        // The lock the acquisition searches under is the acquiring search's, so its
+        // The lock the acquisition runs under is the acquiring search's, so its
         // own earlier record reads as owned by a running orchestrator.
         let lock = store.acquire_search_lock(&sample_search(7))?;
         let guard = acquire(

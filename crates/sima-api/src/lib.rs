@@ -17,7 +17,7 @@
 //!   with its inert [`NoCheckpoint`] handle;
 //! - the device vocabulary: [`DeviceBinding`] and [`DeviceClass`], which name
 //!   the device an executor is built for, and [`DeviceInfo`] with
-//!   [`DeviceType`], which are how a domain answers what its work searches on;
+//!   [`DeviceType`], which are how a domain answers what its work runs on;
 //! - the identity-bearing values a component is handed: [`Spec`], [`Params`],
 //!   [`FormatId`], [`GeneratorId`], and the [`Environment`] vocabulary;
 //! - the foundations those values are built on: [`Error`] and [`Result`],

@@ -26,7 +26,7 @@ beyond it as an elastic, heterogeneous extension.
 
 ## What you can do
 
-- **Search a space of programs.** Declare a run in one `sima.toml`: a
+- **Search a space of programs.** Declare a search in one `sima.toml`: a
   generator produces candidate specs — procedural, evolutionary, or an LLM
   proposing edits against high-scoring parents — the scheduler fans them out
   across your GPUs, and every result lands in a content-addressed store. The
@@ -34,33 +34,33 @@ beyond it as an elastic, heterogeneous extension.
   domain binds a spec format to its executor and generator, and
   cellular-automata evolution (Gray-Scott, asynchronous neural CA) is the
   first domain in-tree.
-- **Scale from one GPU to many machines.** A run declares the machines it can
+- **Scale from one GPU to many machines.** A search declares the machines it can
   use by naming them once: `[host.<name>]` is one machine, `[host_class.<name>]`
-  several identical ones scaled by a count, `[fleet]` lists the members a run
+  several identical ones scaled by a count, `[fleet]` lists the members a search
   may draw on, and `[orchestrator]` is the machine you typed the command on.
   Multi-GPU on one host through device classes; a declared host runs its workers
   in a container over ssh, speaking the same wire protocol — task inputs and
-  results cross inline, and the store never leaves the orchestrator. `sima run`
-  uses the orchestrator alone and `sima run --fleet` adds every member, so
-  declaring a machine says a run *may* use it and the invocation says it does.
+  results cross inline, and the store never leaves the orchestrator. `sima search`
+  uses the orchestrator alone and `sima search --fleet` adds every member, so
+  declaring a machine says a search *may* use it and the invocation says it does.
   Worker faults converge through idempotent retry.
-- **Migrate a run.** Start a search on the laptop, interrupt it, and
-  `sima migrate` moves the whole run — its store and its orchestrator — onto the
+- **Migrate a search.** Start a search on the laptop, interrupt it, and
+  `sima migrate` moves the whole search — its store and its orchestrator — onto the
   machine `[orchestrator].migrate` names, resumes it there, streams its events
   back, and brings the results home. A have/want store sync transfers exactly
   the missing records and objects, so what crosses is the difference and nothing
-  else. The far run is detached, so nothing on your machine ends it — a dropped
+  else. The far search is detached, so nothing on your machine ends it — a dropped
   connection, a closed terminal, and a Ctrl-C all leave the destination
   computing, and re-running attaches to it again. `sima recall` is what winds it
-  down and brings the results home; the manifest a migrated run writes is
+  down and brings the results home; the manifest a migrated search writes is
   byte-identical to one that never left.
-- **Watch it run, from anywhere.** `sima tui` drives a run in a full-screen
+- **Watch it run, from anywhere.** `sima tui` drives a search in a full-screen
   live view and `sima follow` streams its events to a pipe; `sima status` and
-  `sima report` print run state and per-candidate stats. Every one of them
-  takes `--on <ssh-host>` to observe a run driven on another machine — the
+  `sima report` print search state and per-candidate stats. Every one of them
+  takes `--on <ssh-host>` to observe a search driven on another machine — the
   config is interpreted there, where the store and the orchestrator are, and
   the view renders here. Observation takes no lock and writes nothing, so
-  watching a run cannot perturb it.
+  watching a search cannot perturb it.
 - **Bring your own program.** A compute program outside this workspace — a
   renderer, a simulator, anything with its own GPU context and its own
   dependency tree — is registered by naming its binary:
@@ -69,21 +69,21 @@ beyond it as an elastic, heterogeneous extension.
   `docs/protocol.md` — any language that can frame bytes qualifies. `sima-api`
   is the Rust SDK over that contract and the `sima` Python package the other,
   vended by the binary itself, so a program declaring `sdk = "python"` imports
-  it here and on every machine the run reaches;
+  it here and on every machine the search reaches;
   `examples/stepper-py/` is a whole program written against the latter. sima
   spawns the binary, asks it what its format binds, and runs the search through
   it. It runs as its own process, so it loads its assets once and then streams
   tasks, and the store stays on sima's side of the boundary. Naming a `payload`
-  beside the binary is what sends it elsewhere: `sima migrate` moves the run onto
-  a machine that installs it, and `sima run --fleet` delivers it to every machine
+  beside the binary is what sends it elsewhere: `sima migrate` moves the search onto
+  a machine that installs it, and `sima search --fleet` delivers it to every machine
   the fleet draws on, each of which then answers the digest of what it installed.
-- **Reproduce any result.** A task is identified by content — spec, run
+- **Reproduce any result.** A task is identified by content — spec, search
   parameters, seed, environment, input state — so a recorded result can be
   regenerated from its identity alone, and any backend that returns a result
   for a given key is interchangeable with any other.
 - **Stop and continue.** The store is the only durable state; resume, crash
-  recovery, and re-run are one code path that re-derives the runnable frontier
-  from the store. Kill `sima run` at any point and run it again.
+  recovery, and running again are one code path that re-derives the runnable frontier
+  from the store. Kill `sima search` at any point and run it again.
 
 ## Requirements
 
@@ -101,16 +101,16 @@ beyond it as an elastic, heterogeneous extension.
   elsewhere. A build with no network, or one supplying its own copy, sets
   `SIMA_NVRTC_DIR` to a directory holding `libnvrtc.so`.
 - **ssh and a container runtime** *(optional)* — remote and fleet execution
-  (`sima run --fleet`, `sima migrate`) run workers on other machines.
+  (`sima search --fleet`, `sima migrate`) run workers on other machines.
 
 ## Quick start
 
 ```sh
 cargo build --release
-target/release/sima run examples/gray-scott-search    # drive the run
+target/release/sima search examples/gray-scott-search    # drive the search
 target/release/sima tui examples/gray-scott-search    # or watch it live
 target/release/sima report examples/gray-scott-search # per-candidate stats
-target/release/sima status examples/gray-scott-search --on gpubox # or a run elsewhere
+target/release/sima status examples/gray-scott-search --on gpubox # or a search elsewhere
 target/release/sima report examples/gray-scott-search --spend # rented-instance spend
 ```
 
@@ -174,7 +174,7 @@ forces a deliberate update in the same change:
 | `sima-toolkit-cuda` | `ptx; arch=compute_75` | 1 | PTX regeneration test per kernel |
 
 The two toolkits reach the same tier by opposite routes. WGSL is lowered during
-the run, so a domain records the shader source and names the compiler that
+the search, so a domain records the shader source and names the compiler that
 lowers it. CUDA kernels are compiled ahead of time and their PTX is committed,
 so a domain records the digest of that artifact and the canonical id states only
 what it targets. Committed PTX is regenerated with NVRTC 12.0.x, which fixes the
@@ -188,7 +188,7 @@ drivers; the architecture, `compute_75`, is the separate axis the id names.
 - **Candidates as data.** Specs are interpreted by fixed engines; there is no
   untrusted code path, and execution cost is a deterministic function of the
   task itself (for a cellular automaton, cells × steps).
-- **Elastic scale-out.** A run is fully functional on one machine; remote
+- **Elastic scale-out.** A search is fully functional on one machine; remote
   backends extend capacity without changing semantics.
 - **Backend-agnostic determinism.** A task's result is a function of its
   content-addressed inputs, not of where it ran.
@@ -246,7 +246,7 @@ architectural.
 
 ### A hard crash leaves a machine running until something reconciles
 
-While a run is alive, the guard destroys the machines it rented on every
+While a search is alive, the guard destroys the machines it rented on every
 exit path it can observe, including interrupts and panics. A hard crash —
 `SIGKILL`, a power cut — runs no code at all. The machine stays up and keeps
 billing.

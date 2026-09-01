@@ -25,7 +25,7 @@ pub(crate) trait CellularOps: Send + Sized + 'static {
     /// A device allocation of untyped bytes.
     type Buffer;
     /// A kernel loaded onto the device. `Send` because an engine holding one
-    /// is built on the worker thread that will search it.
+    /// is built on the worker thread that will run it.
     type Kernel: Send;
 
     /// The name of the environment component that pins this backend's

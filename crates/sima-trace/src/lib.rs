@@ -4,7 +4,7 @@
 //! transport, worker host — can emit without an upward edge. Three pieces:
 //!
 //! - [`Event`] — the typed vocabulary, spanning what a search does and what it
-//!   searches on: the search and per-task lifecycle, the bindings a worker resolved
+//!   runs on: the search and per-task lifecycle, the bindings a worker resolved
 //!   (its program, its device, the chain it took over), the rented instances
 //!   that came online, were lost, or were replaced, the budget ceilings a search
 //!   reached, and a correlated [`Diagnostic`](Event::Diagnostic) line.

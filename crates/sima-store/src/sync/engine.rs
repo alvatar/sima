@@ -79,7 +79,7 @@ impl Store {
     /// Synchronizes this store with a peer over a byte pipe, transferring the
     /// task records within `keys` and the objects they reference so both sides
     /// end holding the union. `reader`/`writer` are the pipe halves to the
-    /// peer, which searches `sync` with the opposite [`SyncRole`].
+    /// peer, which runs `sync` with the opposite [`SyncRole`].
     ///
     /// Only records and objects move — checkpoints, placement, journals, and
     /// manifests stay with their orchestrator. Every arriving object and record
@@ -139,7 +139,7 @@ impl Store {
         // "Mine" is what this store **holds**, not what it advertised. The two
         // differ: advertising is bounded by the caller's key set, while a store
         // may hold a record or an object outside it — one it was sent under a
-        // wider set in an earlier session. Asking for those back would re-search
+        // wider set in an earlier session. Asking for those back would repeat
         // every earlier transfer at each session. So a peer-advertised item
         // this side does not advertise is looked up before it is wanted.
         //
@@ -552,7 +552,7 @@ mod tests {
     };
 
     /// Drives `store` as a responder against a hand-built peer whose every
-    /// frame is precomputed, so the session searches synchronously against a byte
+    /// frame is precomputed, so the session runs synchronously against a byte
     /// slice with no peer thread. The responder holds no key set of its own, so
     /// it advertises nothing and the peer's `Have` alone decides its want.
     fn responder_reads(
@@ -599,7 +599,7 @@ mod tests {
         // The chunking is what makes an inventory of any size syncable: one
         // frame capped a search at about 1.3M tasks, past which sync was
         // impossible rather than slow. The bound is a parameter here so the
-        // case searches on a handful of entries instead of a quarter of a gigabyte.
+        // case runs on a handful of entries instead of a quarter of a gigabyte.
         let records: Vec<(TaskKey, Hash)> = (0..7u8)
             .map(|i| (TaskKey::from_hash(hash_bytes(&[i])), hash_bytes(&[i, 1])))
             .collect();
@@ -858,7 +858,7 @@ mod tests {
     fn what_this_side_holds_outside_its_key_set_is_never_asked_for() {
         // Advertising is bounded by the caller's key set; holding is not. A
         // store sent a record under a wider set in an earlier session must not
-        // ask for it back, or every session would re-search every earlier one.
+        // ask for it back, or every session would transfer every earlier one again.
         // The key set here is empty, so this side advertises none of what it
         // holds, which is exactly the case.
         let (_dir, store) = temp_store();

@@ -18,12 +18,12 @@ use super::file::{DeviceSection, Entry, MachineSection, OrchestratorSection, Ssh
 use super::settings::{dollars_to_micro_ceil, finite_dollars};
 use crate::devices::DeviceSelector;
 
-/// The image a machine of yours searches its workers from when its entry names
+/// The image a machine of yours runs its workers from when its entry names
 /// none.
 const DEFAULT_IMAGE: &str = "localhost/sima:latest";
 /// The container runtime a machine of yours uses when its entry names none.
 const DEFAULT_RUNTIME: &str = "docker";
-/// The image a rented machine searches when its entry names none. It carries both
+/// The image a rented machine runs when its entry names none. It carries both
 /// binaries: `sima-worker` for the machine's workers, and `sima` for the
 /// orchestrator of a search migrated onto it.
 const DEFAULT_RENTED_IMAGE: &str = "ghcr.io/alvatar/sima:latest";
@@ -50,7 +50,7 @@ pub struct Orchestrator {
     /// The `[host.*]` entry `sima migrate` moves the search onto, or `None` for a
     /// config that names no destination.
     pub migrate: Option<String>,
-    /// The container this machine's workers search in, or `None` for workers as
+    /// The container this machine's workers run in, or `None` for workers as
     /// plain subprocesses.
     pub container: Option<Container>,
     /// This machine's worker layout, or `None` for an orchestrator that
@@ -61,7 +61,7 @@ pub struct Orchestrator {
 /// One declared machine.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Host {
-    /// How the machine is obtained and what it searches.
+    /// How the machine is obtained and what it runs.
     pub form: HostForm,
     /// Where a migrated search's directory goes on this machine.
     pub root: String,
@@ -72,7 +72,7 @@ pub struct Host {
 /// One declared group of identical machines.
 #[derive(Debug, Clone, PartialEq)]
 pub struct HostClass {
-    /// How the machines are obtained and what they search.
+    /// How the machines are obtained and what they run.
     pub form: HostClassForm,
     /// Where a migrated search's directory goes on these machines.
     pub root: String,
@@ -100,13 +100,13 @@ pub enum HostClassForm {
     Rented(RentedClass),
 }
 
-/// A machine of yours: where it is reached, the container its workers search in,
+/// A machine of yours: where it is reached, the container its workers run in,
 /// and how many of them.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OwnedHost {
     /// The ssh destination — the entry's own name unless `ssh` overrode it.
     pub ssh: String,
-    /// The container this machine's workers search in.
+    /// The container this machine's workers run in.
     pub container: Container,
     /// This machine's worker layout.
     pub pool: Pool,
@@ -119,7 +119,7 @@ pub struct OwnedClass {
     /// One ssh destination per machine, derived from the entry's name and
     /// `count` unless an `ssh` list gave them.
     pub ssh: Vec<String>,
-    /// The container each machine's workers search in.
+    /// The container each machine's workers run in.
     pub container: Container,
     /// Each machine's worker layout.
     pub pool: Pool,
@@ -132,7 +132,7 @@ pub struct OwnedClass {
 pub struct Rented {
     /// The control-plane backend to acquire through.
     pub provider: ProviderId,
-    /// The image each instance searches: `sima-worker` for its workers, and the
+    /// The image each instance runs: `sima-worker` for its workers, and the
     /// `sima` a search migrated onto it is driven by.
     pub image: String,
     /// The disk each instance is provisioned with, in gigabytes.
@@ -157,10 +157,10 @@ pub struct RentedClass {
     pub fill: FillPolicy,
 }
 
-/// The container a machine's workers search in.
+/// The container a machine's workers run in.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Container {
-    /// The worker image to search.
+    /// The worker image to run.
     pub image: String,
     /// The container runtime: `docker` or `podman`.
     pub runtime: String,
@@ -238,7 +238,7 @@ impl ProviderId {
 /// What a rented class does when it cannot acquire its full declared count.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FillPolicy {
-    /// The full count or the search fails before any task searches, tearing down
+    /// The full count or the search fails before any task runs, tearing down
     /// whatever was acquired.
     Strict,
     /// Run with what was acquired, at least one machine.
@@ -544,7 +544,7 @@ fn class_count(path: &Path, subject: &str, count: Option<i64>) -> Result<Option<
         .transpose()
 }
 
-/// The container a machine of yours searches its workers in. Its image defaults, so
+/// The container a machine of yours runs its workers in. Its image defaults, so
 /// every machine has one and the runtime and the search flags are always
 /// meaningful — an entry naming none of the three still gets the default
 /// container.
@@ -562,10 +562,10 @@ fn machine_container(
     })
 }
 
-/// The container the orchestrator searches its workers in, or `None` for workers as
+/// The container the orchestrator runs its workers in, or `None` for workers as
 /// plain subprocesses.
 ///
-/// This machine's image does not default — the orchestrator searches bare unless it
+/// This machine's image does not default — the orchestrator runs bare unless it
 /// is asked for a container — so the runtime and the search flags would describe a
 /// container that does not exist, and each is rejected naming the key.
 fn orchestrator_container(
@@ -582,7 +582,7 @@ fn orchestrator_container(
         ] {
             if present {
                 return Err(Error::Validation(format!(
-                    "{}: {subject} sets {key:?} but no image, so it searches its workers as plain \
+                    "{}: {subject} sets {key:?} but no image, so it runs its workers as plain \
                      subprocesses and there is no container for {key:?} to describe",
                     path.display()
                 )));

@@ -365,7 +365,7 @@ impl<'a, 'b> Supervisor<'a, 'b> {
             Objective::CheapestPerHour,
             &limits,
             self.budget,
-            // Run teardown sets this to abort a replacement mid-flight, so a
+            // Search teardown sets this to abort a replacement mid-flight, so a
             // slow offer walk never delays the search's exit; a caller with no
             // cancellation (the unit tests) walks to completion.
             // Replacements are this one thread's, made one at a time and
@@ -398,7 +398,7 @@ impl<'a, 'b> Supervisor<'a, 'b> {
                 // resumable, a fault is not. Re-assess, and on exhaustion take
                 // the interrupt path — the transport retires non-fatally as the
                 // search is ending. Any other failure retires per the fill policy:
-                // strict faults the search, best-effort searches on with one fewer
+                // strict faults the search, best-effort runs on with one fewer
                 // pool.
                 match assess(self.store, self.lock.search(), self.budget, now_ms)? {
                     Verdict::Exhausted(exhaustion) => {
@@ -429,7 +429,7 @@ fn instance_online<P: Provider + ?Sized>(guard: &InstanceGuard<'_, P>, host: &st
     }
 }
 
-/// The supervisor's exit guard, search on every path out of [`Supervisor::search`]:
+/// The supervisor's exit guard, run on every path out of [`Supervisor::search`]:
 /// it clears the search's emitter clone so the collector can join, and retires the
 /// transports as fatal on an unwind so a worker blocked in `Replacing` never
 /// waits forever on a target the panicked supervisor will never swap. A clean
@@ -692,7 +692,7 @@ mod tests {
         assert_eq!(
             provider.live().len(),
             1,
-            "exactly one machine searches after replacement"
+            "exactly one machine runs after replacement"
         );
         // The replacement's InstanceOnline reports the host it actually answers
         // on — the new endpoint's host — not the dead machine's original host.
@@ -905,7 +905,7 @@ mod tests {
     }
 
     #[test]
-    fn every_group_is_supervised_under_the_runs_one_budget() -> Result<()> {
+    fn every_group_is_supervised_under_the_search_s_one_budget() -> Result<()> {
         // Two rented entries, each its own control plane and specification. One
         // heartbeat polls both, and the ceiling that stops them is the search's.
         let (_dir, store, search) = acquisition_env();

@@ -30,7 +30,7 @@ use crate::rental::{
 
 /// Drives the search a loaded config describes: opens the store (creating it
 /// where missing), takes the search's orchestrator lock, dispatches the domain
-/// and the generator, locates the worker binary, and searches the scheduler over
+/// and the generator, locates the worker binary, and runs the scheduler over
 /// subprocess workers. Resume and re-evaluation are this same call — the
 /// frontier re-derives from store state, so an interrupted or failed search
 /// continues and a finalized one re-finalizes without touching an executor.
@@ -161,7 +161,7 @@ pub fn orchestrate(
     };
     // Rentals are acquired under the held lock — each machine behind a teardown
     // guard held for the search's life. A strict-fill shortfall tears down whatever
-    // was acquired and fails here, before any task searches.
+    // was acquired and fails here, before any task runs.
     //
     // Putting the search on its machines happens under the search's own journal
     // boundary: it is minutes of delivery and spending with no worker yet
@@ -266,10 +266,10 @@ pub fn orchestrate(
     // A search with rentals drives a supervisor thread alongside the scheduler: it
     // keeps them within the search's budget and replaces lost machines while the
     // search proceeds. Both live in one scope so the supervisor borrows the store,
-    // lock, and groups; the scheduler searches on this thread, and the stop signal
+    // lock, and groups; the scheduler runs on this thread, and the stop signal
     // winds the supervisor down when it returns.
     //
-    // The whole of it searches under the search's own wall-clock ceiling, so a search
+    // The whole of it runs under the search's own wall-clock ceiling, so a search
     // nobody is watching still ends: the flag the ceiling raises is the one
     // `SIGINT` raises, and every pool winds down on it.
     let (outcome, ceiling_fired) =
@@ -378,7 +378,7 @@ struct LocalPool {
     slots: Vec<Option<DeviceBinding>>,
 }
 
-/// A resolved container pool on one machine: its transport, the machine it searches
+/// A resolved container pool on one machine: its transport, the machine it runs
 /// on, and its slots.
 struct ContainerPool {
     transport: ContainerTransport,
@@ -422,7 +422,7 @@ impl WorkerProgram {
     }
 }
 
-/// What a machine's containers search for this search.
+/// What a machine's containers run for this search.
 ///
 /// A format this build carries is answered by the image's own worker: nothing
 /// was delivered there, so nothing is mounted and no digest is expected back. A
@@ -440,7 +440,7 @@ enum MachineProgram<'a> {
 }
 
 impl MachineProgram<'_> {
-    /// What one worker's container searches there.
+    /// What one worker's container runs there.
     fn worker_run(&self) -> ContainerRun {
         match self {
             MachineProgram::Image => ContainerRun::worker(Vec::new()),
@@ -449,7 +449,7 @@ impl MachineProgram<'_> {
     }
 
     /// The devices this search's work can be placed on there, enumerated in a
-    /// throwaway container where the pool's own containers search — so the answer
+    /// throwaway container where the pool's own containers run — so the answer
     /// covers the same hardware the workers will reach.
     ///
     /// The image's worker is asked about the format when the image carries it.
@@ -516,7 +516,7 @@ fn derives_workers(config: &LoadedConfig) -> bool {
 ///
 /// Without an image the workers are plain subprocesses of the binary `source`
 /// names, and their device selectors resolve against this machine's own
-/// hardware. With one they search in a container here, so the image is verified
+/// hardware. With one they run in a container here, so the image is verified
 /// and the selectors resolve against what the enumeration probe reports from
 /// inside it — the same path a machine of yours follows, minus the ssh hop.
 fn local_pool(
@@ -549,7 +549,7 @@ fn local_pool(
                 // The binary the format's tasks execute in: sima's own worker,
                 // or the program the config routed this format to.
                 source.worker_binary()?,
-                // A local worker searches the bare binary: no arguments.
+                // A local worker runs the bare binary: no arguments.
                 Vec::new(),
                 // Inherited for sima's own worker, explicit for a program a
                 // config routed this format to.
@@ -587,7 +587,7 @@ fn local_pool(
 ///
 /// `delivery` is what was put on those machines, and `None` for a search whose
 /// format the image answers for itself. It decides both what a worker there
-/// searches and what it is expected to answer.
+/// runs and what it is expected to answer.
 fn owned_pools(
     machines: &[OwnedMachine<'_>],
     search: &SearchId,
@@ -661,7 +661,7 @@ fn container_pool(
     };
     // A deterministic per-search, per-pool container-name stem; the transport adds
     // a spawn suffix. The search id prefix keeps names distinct across concurrent
-    // searches on one machine.
+    // runs on one machine.
     let stem = search.to_string();
     let prefix = format!("sima-w-{}-{index}", &stem[..stem.len().min(12)]);
     Ok(ContainerPool {

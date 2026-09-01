@@ -91,7 +91,7 @@ fn rent_within<'a, P: Provider>(
         Objective::CheapestPerHour,
         &limits(),
         budget,
-        // This lifecycle exercise searches an acquisition to completion; nothing
+        // This lifecycle exercise runs an acquisition to completion; nothing
         // cancels it.
         &sima_provider::Admission::new(),
         &std::sync::atomic::AtomicBool::new(false),
@@ -129,7 +129,7 @@ fn a_machine_a_dead_process_left_running_is_destroyed_by_reconciliation() -> Res
         let store = Store::open(dir.path())?;
         let (guard, lock) = rent(&provider, &store, &owner(11))?;
         let id = guard.id().clone();
-        // Standing in for a process killed outright: no destructor searches, so
+        // Standing in for a process killed outright: no destructor runs, so
         // the machine stays up and its ledger record stays behind, while the
         // kernel frees the search lock the dead process held.
         std::mem::forget(guard);
@@ -153,7 +153,7 @@ fn a_machine_a_dead_process_left_running_is_destroyed_by_reconciliation() -> Res
 }
 
 #[test]
-fn acquiring_cleans_a_dead_runs_orphan_before_renting_a_new_machine() -> Result<()> {
+fn acquiring_cleans_a_dead_search_s_orphan_before_renting_a_new_machine() -> Result<()> {
     let dir = tempfile::tempdir().expect("create temp dir");
     let provider = StubProvider::new(vec![offer("first", 100_000), offer("second", 200_000)]);
     let leaked: InstanceId = {
@@ -178,7 +178,7 @@ fn acquiring_cleans_a_dead_runs_orphan_before_renting_a_new_machine() -> Result<
 }
 
 #[test]
-fn a_runs_own_leftover_survives_its_next_acquisition_while_it_holds_the_lock() -> Result<()> {
+fn a_search_s_own_leftover_survives_its_next_acquisition_while_it_holds_the_lock() -> Result<()> {
     let dir = tempfile::tempdir().expect("create temp dir");
     let provider = StubProvider::new(vec![offer("first", 100_000), offer("second", 200_000)]);
     let leaked: InstanceId = {

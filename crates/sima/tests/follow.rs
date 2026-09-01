@@ -2,7 +2,7 @@
 //!
 //! **Tier A — the whole mechanism, no ssh.** The near side spawns an `ssh`
 //! found on `PATH`; these tests put one there that drops the ssh arguments and
-//! searches the built binary on this machine. Every part of remote observation is
+//! runs the built binary on this machine. Every part of remote observation is
 //! exercised: the invocation, the far side loading the config and serving its
 //! journal, the frame stream, the near side folding records and rendering
 //! them. What is absent is the network hop, which the stream cannot
@@ -33,7 +33,7 @@ use std::time::Duration;
 
 use common::{manifest_of, sima_command};
 
-/// The ssh destination Tier B searches against, or `None` to skip it.
+/// The ssh destination Tier B runs against, or `None` to skip it.
 fn follow_host() -> Option<String> {
     std::env::var("SIMA_TEST_FOLLOW_HOST")
         .ok()
@@ -55,9 +55,9 @@ fn stdout(output: &Output) -> String {
     String::from_utf8(output.stdout.clone()).expect("stdout is UTF-8")
 }
 
-/// Writes an `ssh` into `dir` that searches the far side on this machine: it
+/// Writes an `ssh` into `dir` that runs the far side on this machine: it
 /// drops everything up to the `--` that ends ssh's own options, drops the
-/// `sima` program name the near side asks for, and searches the built binary with
+/// `sima` program name the near side asks for, and runs the built binary with
 /// the rest. The result is the follow transport over a plain pipe.
 fn ssh_shim(dir: &Path) -> PathBuf {
     let path = dir.join("ssh");
@@ -165,7 +165,7 @@ fn a_remote_task_view_renders_exactly_what_the_local_one_renders() {
 }
 
 #[test]
-fn a_remote_follow_streams_a_live_run_to_its_end() {
+fn a_remote_follow_streams_a_live_search_to_its_end() {
     let dir = tempfile::tempdir().expect("temp dir");
     let bin = ssh_shim(dir.path());
     let config = write_config(dir.path(), r#""sleep:800", "sleep:800", "sleep:800""#);
@@ -179,7 +179,7 @@ fn a_remote_follow_streams_a_live_run_to_its_end() {
 }
 
 #[test]
-fn a_remote_follow_carries_the_run_s_outcome_code() {
+fn a_remote_follow_carries_the_search_s_outcome_code() {
     let dir = tempfile::tempdir().expect("temp dir");
     let bin = ssh_shim(dir.path());
     let config = write_config(dir.path(), r#""succeed", "reject""#);
@@ -210,12 +210,12 @@ fn a_far_side_fault_reaches_the_near_side_as_its_own_error() {
 }
 
 #[test]
-fn a_remote_follow_over_an_abandoned_run_exits_0() {
+fn a_remote_follow_over_an_abandoned_search_exits_0() {
     let dir = tempfile::tempdir().expect("temp dir");
     let bin = ssh_shim(dir.path());
     let config = write_config(dir.path(), r#""sleep:4000", "sleep:4000""#);
     let path = config.to_str().expect("utf-8 path");
-    common::abandon_run(&config);
+    common::abandon_search(&config);
 
     // The far side reports a free lock over a journal that stopped mid-search,
     // and the near side ends on it the way the local follow does: a resumable
@@ -294,7 +294,7 @@ fn a_far_side_at_another_protocol_version_is_refused_while_it_still_runs() {
 }
 
 #[test]
-fn a_followed_run_finalizes_to_the_manifest_an_unobserved_search_produces() {
+fn a_followed_search_finalizes_to_the_manifest_an_unobserved_search_produces() {
     // Observation is read-only by construction — the far side takes no lock
     // and writes nothing — so a followed search and an unobserved one must reach
     // byte-identical manifests.
@@ -341,7 +341,7 @@ fn a_remote_view_over_ssh_renders_exactly_what_the_local_one_renders() {
 }
 
 #[test]
-fn a_remote_follow_over_ssh_streams_a_live_run_to_its_end() {
+fn a_remote_follow_over_ssh_streams_a_live_search_to_its_end() {
     let Some(host) = follow_host() else {
         return;
     };
@@ -357,7 +357,7 @@ fn a_remote_follow_over_ssh_streams_a_live_run_to_its_end() {
 }
 
 #[test]
-fn a_followed_run_over_ssh_finalizes_to_the_unobserved_manifest() {
+fn a_followed_search_over_ssh_finalizes_to_the_unobserved_manifest() {
     let Some(host) = follow_host() else {
         return;
     };

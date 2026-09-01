@@ -39,7 +39,7 @@
 //! instance at teardown. So the subprocess link's own `kill` — which kills the
 //! local ssh client — is the whole kill, and no wrapper is needed.
 //!
-//! What a spawn actually searches at the far end is [`RemoteCommand`]: the image's
+//! What a spawn actually runs at the far end is [`RemoteCommand`]: the image's
 //! own worker, or a program delivered to that machine.
 //!
 //! The stub-provider testing path is the same transport in [`SpawnMode::Local`]:
@@ -177,20 +177,20 @@ impl SshDestination {
     }
 }
 
-/// Whether a spawn crosses ssh or searches here.
+/// Whether a spawn crosses ssh or runs here.
 #[derive(Debug, Clone)]
 pub enum SpawnMode {
-    /// ssh to the destination; the worker searches as the ssh command.
+    /// ssh to the destination; the worker runs as the ssh command.
     Ssh,
     /// Spawn the binary at this path directly, no ssh hop — the stub-provider
     /// testing path, and the machine reached without one.
     Local(PathBuf),
 }
 
-/// What an ssh spawn searches at the far end.
+/// What an ssh spawn runs at the far end.
 ///
-/// A search whose format the far machine's image carries searches that image's own
-/// worker. A search whose format is a program delivered there searches whatever the
+/// A search whose format the far machine's image carries runs that image's own
+/// worker. A search whose format is a program delivered there runs whatever the
 /// caller states — in practice a shell that sets the program's environment on
 /// that machine and execs it, since sima's process here is only the ssh client
 /// and its own environment never crosses.
@@ -212,7 +212,7 @@ impl RemoteCommand {
         RemoteCommand(command)
     }
 
-    /// The argv that searches this command at `destination` over ssh: the
+    /// The argv that runs this command at `destination` over ssh: the
     /// destination's own invocation, then the command. Every ssh spawn in the
     /// workspace is composed here, so a caller building one for a purpose of
     /// its own cannot spell the hop differently.
@@ -263,7 +263,7 @@ enum Spawnable {
 /// running pool. One transport serves one machine's pool.
 pub struct SshTransport {
     mode: SpawnMode,
-    /// What an ssh spawn searches at the far end.
+    /// What an ssh spawn runs at the far end.
     command: RemoteCommand,
     /// The current target and its lifecycle, guarded so the supervisor's swaps
     /// and the worker threads' spawns serialize.
@@ -418,7 +418,7 @@ impl WorkerTransport for SshTransport {
 }
 
 impl SshTransport {
-    /// Resolves a spawnable target and searches `attempt` against it, retrying a
+    /// Resolves a spawnable target and runs `attempt` against it, retrying a
     /// failure in `retry_mode` until the attempt spawns, the target moves on,
     /// or the readiness bound elapses. Factored from
     /// [`spawn`](SshTransport::spawn) so the wait-and-retry control flow is
@@ -517,7 +517,7 @@ impl SpawnMode {
 /// own bounds, where the wait-and-retry loop can act on it.
 const SSH_CONNECT_TIMEOUT_SECS: u64 = 10;
 
-/// The argv that searches `sima-worker` at `destination` over ssh: the
+/// The argv that runs `sima-worker` at `destination` over ssh: the
 /// destination's own [`prefix`](SshDestination::prefix), then the worker, with
 /// the enumeration arguments appended when `probe` asks a question.
 pub(crate) fn ssh_argv(destination: &SshDestination, probe: Option<DeviceProbe>) -> Vec<String> {
@@ -750,7 +750,7 @@ mod tests {
 
     #[test]
     fn an_ssh_spawn_runs_the_command_the_caller_states() {
-        // A machine that received a program searches that program rather than the
+        // A machine that received a program runs that program rather than the
         // image's worker, under a shell that states its environment there.
         let command = RemoteCommand::program(vec![
             "sh".to_string(),

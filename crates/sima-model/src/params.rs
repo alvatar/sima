@@ -1,10 +1,10 @@
-//! Run parameters: the opaque evaluation-axis blob paired with a spec.
+//! Search parameters: the opaque evaluation-axis blob paired with a spec.
 
 use sima_core::{Codec, Dec, Enc, Result, hash_bytes};
 
 use crate::canonical::{self, TAG_PARAMS};
 
-/// Run parameters for evaluating a candidate: extent, step count, budgets —
+/// Search parameters for evaluating a candidate: extent, step count, budgets —
 /// whatever the domain's evaluation needs beyond the candidate itself.
 /// Opaque to the infrastructure and interpreted under the paired spec's
 /// format id; params carries no format id of its own. Config is the

@@ -159,7 +159,7 @@ mod tests {
 
     /// A fresh store and a search id to lock; the search's directory does not
     /// exist yet, so acquisition also covers its creation.
-    fn store_and_run() -> (tempfile::TempDir, Store, SearchId) {
+    fn store_and_search() -> (tempfile::TempDir, Store, SearchId) {
         let dir = tempfile::tempdir().expect("temp dir");
         let store = Store::open(dir.path()).expect("open store");
         let search = SearchId::from_hash(hash_bytes(b"a search to lock"));
@@ -168,7 +168,7 @@ mod tests {
 
     #[test]
     fn acquire_records_the_holder_in_the_lock_file() -> Result<()> {
-        let (dir, store, search) = store_and_run();
+        let (dir, store, search) = store_and_search();
         let _lock = store.acquire_search_lock(&search)?;
         let content = fs::read_to_string(
             dir.path()
@@ -184,8 +184,8 @@ mod tests {
     }
 
     #[test]
-    fn a_lock_names_the_run_it_covers() -> Result<()> {
-        let (_dir, store, search) = store_and_run();
+    fn a_lock_names_the_search_it_covers() -> Result<()> {
+        let (_dir, store, search) = store_and_search();
         let lock = store.acquire_search_lock(&search)?;
         // A reference to the lock stands for that search's liveness, so the
         // search it covers is readable from it.
@@ -195,7 +195,7 @@ mod tests {
 
     #[test]
     fn a_held_lock_is_validation_naming_the_holder() -> Result<()> {
-        let (_dir, store, search) = store_and_run();
+        let (_dir, store, search) = store_and_search();
         let _lock = store.acquire_search_lock(&search)?;
         match store.acquire_search_lock(&search) {
             Err(Error::Validation(msg)) => {
@@ -210,7 +210,7 @@ mod tests {
 
     #[test]
     fn dropping_the_lock_releases_it() -> Result<()> {
-        let (_dir, store, search) = store_and_run();
+        let (_dir, store, search) = store_and_search();
         drop(store.acquire_search_lock(&search)?);
         // Released on drop: the second acquisition succeeds.
         store.acquire_search_lock(&search)?;
@@ -219,7 +219,7 @@ mod tests {
 
     #[test]
     fn dropping_the_lock_releases_it_while_a_copy_of_its_descriptor_lives() -> Result<()> {
-        let (_dir, store, search) = store_and_run();
+        let (_dir, store, search) = store_and_search();
         let lock = store.acquire_search_lock(&search)?;
         // What spawning a worker does to this descriptor: the fork hands the
         // child a copy of every one of the parent's, and close-on-exec closes
@@ -236,7 +236,7 @@ mod tests {
 
     #[test]
     fn lock_holder_names_the_holder_while_held_and_clears_on_release() -> Result<()> {
-        let (_dir, store, search) = store_and_run();
+        let (_dir, store, search) = store_and_search();
         let lock = store.acquire_search_lock(&search)?;
         let holder = store.lock_holder(&search)?.expect("a holder while locked");
         // The probe returns the recorded diagnostic line: pid, then hostname.
@@ -248,8 +248,8 @@ mod tests {
     }
 
     #[test]
-    fn lock_holder_probes_a_missing_run_without_creating_anything() -> Result<()> {
-        let (dir, store, search) = store_and_run();
+    fn lock_holder_probes_a_missing_search_without_creating_anything() -> Result<()> {
+        let (dir, store, search) = store_and_search();
         assert_eq!(store.lock_holder(&search)?, None);
         // The probe is read-only: no search directory appeared.
         assert!(
@@ -262,8 +262,8 @@ mod tests {
     }
 
     #[test]
-    fn lock_holder_on_a_run_without_a_lock_file_creates_none() -> Result<()> {
-        let (dir, store, search) = store_and_run();
+    fn lock_holder_on_a_search_without_a_lock_file_creates_none() -> Result<()> {
+        let (dir, store, search) = store_and_search();
         let search_dir = dir.path().join("searches").join(search.to_string());
         fs::create_dir_all(&search_dir).expect("create search dir");
         assert_eq!(store.lock_holder(&search)?, None);
@@ -274,7 +274,7 @@ mod tests {
 
     #[test]
     fn lock_holder_is_none_on_a_released_lock_file() -> Result<()> {
-        let (dir, store, search) = store_and_run();
+        let (dir, store, search) = store_and_search();
         // A lock file left by an exited holder: the OS released the lock
         // with the process, so the stale content names nobody alive.
         let search_dir = dir.path().join("searches").join(search.to_string());
@@ -287,7 +287,7 @@ mod tests {
 
     #[test]
     fn a_leftover_lock_file_without_a_holder_acquires_fine() -> Result<()> {
-        let (dir, store, search) = store_and_run();
+        let (dir, store, search) = store_and_search();
         // A plain file left by a dead holder: the OS released its lock
         // with the process, so the content is stale and irrelevant.
         let search_dir = dir.path().join("searches").join(search.to_string());

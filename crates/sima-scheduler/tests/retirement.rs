@@ -56,7 +56,7 @@ fn one_slot() -> Vec<Option<DeviceBinding>> {
 }
 
 #[test]
-fn a_fatal_retirement_faults_the_run() -> Result<()> {
+fn a_fatal_retirement_faults_the_search() -> Result<()> {
     let cfg = config(70, vec![StubBehavior::Succeed]);
     let (_dir, store) = temp_store();
     let transport = RetiringTransport { fatal: true };
@@ -118,7 +118,7 @@ fn a_retirement_is_journaled_as_a_diagnostic() -> Result<()> {
 }
 
 #[test]
-fn a_non_fatal_retirement_lets_a_survivor_finish_the_run() -> Result<()> {
+fn a_non_fatal_retirement_lets_a_survivor_finish_the_search() -> Result<()> {
     // Two distinct candidates, and two pools: a retiring best-effort pool and a
     // healthy loopback pool. The survivor drains the queue and the search
     // finalizes.
@@ -178,7 +178,7 @@ fn the_last_worker_retiring_faults_rather_than_hangs() -> Result<()> {
 }
 
 #[test]
-fn a_spawn_failure_still_faults_the_run() -> Result<()> {
+fn a_spawn_failure_still_faults_the_search() -> Result<()> {
     // The regression guard: a spawn that returns `Err` — an infrastructure
     // failure, not a retirement — faults the search, unchanged by the
     // SpawnOutcome refactor.

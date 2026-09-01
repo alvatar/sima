@@ -1,6 +1,6 @@
 //! Placement slots: mutable per-chain device bindings under a search.
 //!
-//! A slot records the device class a chain's work searches on, so every segment,
+//! A slot records the device class a chain's work runs on, so every segment,
 //! retry, and resumed attempt of one chain reaches the same class. The binding
 //! is advisory coherence state: it enters no hash, no record, and no manifest,
 //! and losing one costs coherence for that chain, never correctness — an
@@ -121,7 +121,7 @@ mod tests {
     }
 
     #[test]
-    fn a_run_with_no_bindings_reads_empty() -> Result<()> {
+    fn a_search_with_no_bindings_reads_empty() -> Result<()> {
         let (_dir, store) = temp_store();
         let search = sample_search_config(42).id();
         assert!(store.chain_bindings(&search)?.is_empty());
@@ -144,7 +144,7 @@ mod tests {
     }
 
     #[test]
-    fn every_chain_of_a_run_reads_back() -> Result<()> {
+    fn every_chain_of_a_search_reads_back() -> Result<()> {
         let (_dir, store) = temp_store();
         let search = sample_search_config(42).id();
         for chain in 0..4u64 {
@@ -162,7 +162,7 @@ mod tests {
     }
 
     #[test]
-    fn bindings_are_scoped_to_their_run() -> Result<()> {
+    fn bindings_are_scoped_to_their_search() -> Result<()> {
         let (_dir, store) = temp_store();
         let one = sample_search_config(1).id();
         let two = sample_search_config(2).id();

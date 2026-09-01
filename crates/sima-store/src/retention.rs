@@ -418,7 +418,7 @@ mod tests {
     }
 
     #[test]
-    fn runs_lists_every_registered_run_sorted() -> Result<()> {
+    fn searches_lists_every_registered_search_sorted() -> Result<()> {
         let (_dir, store) = temp_store();
         let a = finalized_search(&store, 42, &[1])?;
         let b = finalized_search(&store, 43, &[2])?;
@@ -429,7 +429,7 @@ mod tests {
     }
 
     #[test]
-    fn runs_rejects_a_non_run_entry_as_corruption() -> Result<()> {
+    fn searches_rejects_a_non_search_entry_as_corruption() -> Result<()> {
         let (dir, store) = temp_store();
         finalized_search(&store, 42, &[1])?;
         fs::write(dir.path().join("searches").join("not-a-search-id"), b"")
@@ -439,9 +439,9 @@ mod tests {
     }
 
     #[test]
-    fn removing_a_run_keeps_objects_shared_with_another_finalized_search() -> Result<()> {
+    fn removing_a_search_keeps_objects_shared_with_another_finalized_search() -> Result<()> {
         let (dir, store) = temp_store();
-        // Run A over seeds {1, 2}, search B over {2, 3}: seed 2's record, artifact,
+        // Search A over seeds {1, 2}, search B over {2, 3}: seed 2's record, artifact,
         // and index entry are shared; each search's config and its own seed's
         // objects are exclusive.
         let a = finalized_search(&store, 42, &[1, 2])?;
@@ -474,7 +474,7 @@ mod tests {
     }
 
     #[test]
-    fn a_second_removal_is_run_not_found() -> Result<()> {
+    fn a_second_removal_is_search_not_found() -> Result<()> {
         let (_dir, store) = temp_store();
         let a = finalized_search(&store, 42, &[1])?;
         finalized_search(&store, 43, &[2])?;
@@ -560,7 +560,7 @@ mod tests {
     }
 
     #[test]
-    fn removing_with_another_run_unfinalized_is_validation() -> Result<()> {
+    fn removing_with_another_search_unfinalized_is_validation() -> Result<()> {
         let (_dir, store) = temp_store();
         let a = finalized_search(&store, 42, &[1])?;
         // A second search committed but never finalized.
@@ -575,7 +575,7 @@ mod tests {
     }
 
     #[test]
-    fn removing_the_only_run_empties_to_the_skeleton() -> Result<()> {
+    fn removing_the_only_search_empties_to_the_skeleton() -> Result<()> {
         let (dir, store) = temp_store();
         let a = finalized_search(&store, 42, &[1, 2])?;
         // Every object is exclusive: config, spec, params, environment, two
@@ -635,7 +635,7 @@ mod tests {
     }
 
     #[test]
-    fn removing_a_run_rewrites_the_pack_holding_its_objects() -> Result<()> {
+    fn removing_a_search_rewrites_the_pack_holding_its_objects() -> Result<()> {
         let (dir, store) = temp_store();
         let a = finalized_search(&store, 42, &[1, 2])?;
         let b = finalized_search(&store, 43, &[2, 3])?;
@@ -661,7 +661,7 @@ mod tests {
     }
 
     #[test]
-    fn removing_the_only_run_leaves_neither_objects_nor_packs() -> Result<()> {
+    fn removing_the_only_search_leaves_neither_objects_nor_packs() -> Result<()> {
         let (dir, store) = temp_store();
         let a = finalized_search(&store, 42, &[1, 2])?;
         store.pack()?;
@@ -815,7 +815,7 @@ mod tests {
     }
 
     #[test]
-    fn an_interrupted_gc_converges_on_re_run() -> Result<()> {
+    fn an_interrupted_gc_converges_when_repeated() -> Result<()> {
         // A reference store, swept uninterrupted, to compare against.
         let (ref_dir, ref_store) = temp_store();
         let ref_a = finalized_search(&ref_store, 42, &[1])?;

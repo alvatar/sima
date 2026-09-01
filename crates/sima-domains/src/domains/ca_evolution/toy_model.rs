@@ -167,7 +167,7 @@ impl CaModel for Toy {
     }
 }
 
-/// The genericity lock: the generic CA machinery searches end to end over the toy
+/// The genericity lock: the generic CA machinery runs end to end over the toy
 /// model, with no dependency on Gray-Scott. Together with the toy-driven tests
 /// in `params`, `generator`, and `executor`, this proves the domain is
 /// model-agnostic — a second model plugs in by implementing [`CaModel`] alone.

@@ -1,12 +1,12 @@
 //! [`CellularEngine`]: the boundary between a cellular evaluation and the compute
-//! backend it searches on.
+//! backend it runs on.
 
 use sima_contracts::{DeviceBinding, DeviceInfo};
 use sima_core::{Hash, Result};
 
 use crate::substrates::cellular::Grid;
 
-/// A compute backend an evaluation searches on: it holds a device and the kernels
+/// A compute backend an evaluation runs on: it holds a device and the kernels
 /// compiled for it, it advances a grid, and it reduces the result.
 ///
 /// The trait is one operation wide on purpose. Everything a candidate needs
@@ -15,7 +15,7 @@ use crate::substrates::cellular::Grid;
 /// once for every backend.
 ///
 /// A backend also answers for its own identity: the digest of the reduction
-/// kernel it searches and the component that pins its compiler both enter the
+/// kernel it runs and the component that pins its compiler both enter the
 /// environment of every domain built on it, so two backends give a domain two
 /// distinct environments and neither invalidates the other's stored results.
 ///
@@ -47,7 +47,7 @@ pub(crate) trait CellularEngine: Send + Sized + 'static {
     fn device_desc(device: Option<&DeviceBinding>) -> Result<(String, String)>;
 
     /// The digest of this backend's reduction kernel, an environment
-    /// component of every domain that searches on it.
+    /// component of every domain that runs on it.
     fn reduce_digest() -> Hash;
 
     /// Advances `input.initial` by `input.steps`, leaving the final grid and
@@ -93,7 +93,7 @@ pub(crate) trait CellularEvaluation {
     /// Reduces the resident grid pair into the named scalars, in emission
     /// order.
     ///
-    /// The reduction searches here rather than inside
+    /// The reduction runs here rather than inside
     /// [`evaluate`](CellularEngine::evaluate) so that its faults stay
     /// separable from the advance's: the executor propagates a failed advance
     /// unconditionally, while a failed reduction is observational unless a

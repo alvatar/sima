@@ -9,7 +9,7 @@
 //!
 //! The boundary exists so the scheduler's worker loop is written against traits
 //! the tests can implement without processes: the production transport spawns
-//! `sima-worker` subprocesses, the test loopback searches the same host loop and
+//! `sima-worker` subprocesses, the test loopback runs the same host loop and
 //! wire protocol over in-memory pipes. Everything a child does reaches the
 //! caller as a [`LinkEvent`] — including its death and the caller's deadline
 //! expiring — so outcome classification stays entirely with the caller; an
@@ -18,9 +18,9 @@
 
 use std::time::Instant;
 
-/// The command a worker searches as inside a container or at the far end of an ssh
+/// The command a worker runs as inside a container or at the far end of an ssh
 /// hop: the binary's name on the `PATH` there. A local spawn names a path
-/// instead, since the binary it searches is the one this build found.
+/// instead, since the binary it runs is the one this build found.
 pub(crate) const WORKER_ENTRYPOINT: &str = "sima-worker";
 
 use sima_contracts::{DeviceBinding, Outcome};
@@ -60,7 +60,7 @@ pub enum SpawnOutcome {
     /// `fatal` marks a retirement the search must fault on — a strict-fill rental
     /// that lost the instances it depends on; a non-fatal retirement lets the
     /// worker thread exit cleanly, the best-effort degradation of a rental that
-    /// searches on whatever instances remain.
+    /// runs on whatever instances remain.
     Retired {
         /// Whether the retirement must fault the search.
         fatal: bool,

@@ -18,7 +18,7 @@ randomness in result-affecting paths comes from the project's counter-based
 SplitMix64 PRNG (`sima-core`), implemented identically on CPU and GPU; the
 `rand` crate is banned from result paths. Candidates are specs — opaque bytes
 plus a format id; domains interpret them (CA families call theirs genomes).
-Run parameters (extent, steps, budgets) are a separate opaque params blob:
+Search parameters (extent, steps, budgets) are a separate opaque params blob:
 generators produce specs, config produces params, and the spec's format id
 governs the interpretation of both. The research object is learned/evolved
 computation on data-parallel substrates; cellular automata are the first
@@ -52,7 +52,7 @@ deliberately out of the phase ladder.
 Layering (strictly downward dependencies, enforced by workspace crate edges;
 layer numbers follow the dependency order):
 `sima-core` (L0: error, encode, prng, hash) → `sima-model` (L1: spec, task
-key, provenance, run config) → `sima-store` (L2: cas, catalog, journal
+key, provenance, search config) → `sima-store` (L2: cas, catalog, journal
 modules) → `sima-contracts` (L3: generator/executor traits + stubs) →
 `sima-scheduler` (L4: task sources, leases, lifecycle state machine) →
 `sima-pipeline` (L5: orchestration, resume, re-evaluation) → `sima` (L6: CLI
@@ -62,8 +62,8 @@ core), arriving in P2; `sima-domains` (rule families: CPU references + WGSL
 kernels; depends on contracts + the toolkits it uses), with its first real
 domain in P3.
 
-Running model: one orchestrator per run — the `sima run` process itself; no
-daemon. Single-writer per run enforced by a stale-detectable lease file.
+Running model: one orchestrator per search — the `sima search` process itself; no
+daemon. Single-writer per search enforced by a stale-detectable lease file.
 Workers are stateless leaseholders (threads in P1, processes and remote
 workers later). Executors are pure compute; workers commit results through the
 catalog. The store is the only durable state; the orchestrator process is
@@ -72,7 +72,7 @@ disposable at any instant.
 ## Execution order
 
 Phases are numbered in the order they run, and the ladder is P1 through P9:
-P1 through P9 are done — a registered program travels to the machines a run
+P1 through P9 are done — a registered program travels to the machines a search
 uses, its build is agreed across them, its tasks are routed there, and
 attaching, detaching, and winding down are verbs an operator names. After that
 the ladder pauses. A phase or milestone number means work this version of sima
@@ -98,7 +98,7 @@ Phase-level decisions:
   A static batch (config-enumerated tasks minus completed) is the degenerate
   case; segmented chains (P2), whose successor keys depend on produced state
   hashes, are the general one — the scheduler is built against the general
-  interface from the start. Resume, crash-recovery, and re-run are the same
+  interface from the start. Resume, crash-recovery, and running again are the same
   code path: re-derive the frontier, continue.
 - Interrupt robustness is a first-class property, not an edge case: death at
   any point, graceful or violent, converges on resume. This is what makes
@@ -106,24 +106,24 @@ Phase-level decisions:
   crash-injection tests, not asserted.
 - Candidates are opaque at the infrastructure layer: a spec is (format id,
   opaque bytes), content-addressed. "Genome" is domain-level vocabulary;
-  contracts and store speak in specs. Run parameters travel as a second
+  contracts and store speak in specs. Search parameters travel as a second
   opaque content-addressed blob (params), produced by config; a task
   evaluates the pair (spec, params).
 - Two serialization worlds: identity-bearing bytes (anything hashed) go
   through canonical encoding exclusively; human-readable artifacts (manifest
   JSON) are serde and never identity-bearing.
 - Manifests are canonicalized (entries sorted by task key) on finalization, so
-  run output hashes are independent of worker completion order. Journals
+  search output hashes are independent of worker completion order. Journals
   (attempt histories, timings) are observational, legitimately differ between
-  runs, and are excluded from every equality-based acceptance criterion —
+  searches, and are excluded from every equality-based acceptance criterion —
   equality always compares manifests.
-- Acceptance for the phase: (a) the same config run in two fresh, separate
+- Acceptance for the phase: (a) the same config executed in two fresh, separate
   stores produces identical manifests hash-for-hash — execution determinism,
-  not merely storage stability; (b) a run killed at any crashpoint and
-  resumed equals a run never interrupted; (c) a re-evaluation pass over a
-  recorded run touches no executor; (d) copying the store to another location
+  not merely storage stability; (b) a search killed at any crashpoint and
+  resumed equals a search never interrupted; (c) a re-evaluation pass over a
+  recorded search touches no executor; (d) copying the store to another location
   and resuming the config there yields a manifest identical to never having
-  moved — run portability with zero migration code.
+  moved — search portability with zero migration code.
 
 - [x] M1.1 Crate skeleton (`sima-core`): `Error`/`Result`, canonical encoding
       (`Enc`/`Dec`), counter-based PRNG with pinned known-answer tests;
@@ -135,16 +135,16 @@ Phase-level decisions:
       engine/executor identity; compiled-shader hashes join in P2); anything
       machine-derived is provenance metadata, never key material, or
       acceptance (d) fails by construction. P1 stub env hash = stub version
-      constant. Provenance records, run identity = hash of canonicalized
+      constant. Provenance records, search identity = hash of canonicalized
       config; pure types + canonical encodings, no I/O
 - [x] M1.3 Store (`sima-store`): disk layout `objects/<aa>/<hash>` (CAS,
-      two-char fan-out) + `tasks/<task-key>` (index) + `runs/<run-id>/`
+      two-char fan-out) + `tasks/<task-key>` (index) + `searches/<search-id>/`
       (manifest, journal); cas module — blake3 objects, atomic writes
       (temp + fsync + rename), idempotent puts; catalog module — task index
       with write-ordering discipline (result objects durable before the index
-      entry referencing them), run manifest with canonical ordering,
-      run-closure enumeration (all objects a run references); journal module
-      — append-only per-run journal beside the manifest, one event per line,
+      entry referencing them), search manifest with canonical ordering,
+      search-closure enumeration (all objects a search references); journal module
+      — append-only per-search journal beside the manifest, one event per line,
       newline-terminated crash-safe appends (a torn final line is detected
       and ignored on read), non-identity-bearing
 - [x] M1.4 Contracts + stubs (`sima-contracts`): executor and generator
@@ -159,7 +159,7 @@ Phase-level decisions:
       bytes select behavior: succeed / fail N times then succeed / panic /
       sleep — the fail-N behavior reads the attempt number and is the
       sanctioned exception, its eventual artifact still attempt-independent)
-      so scheduler failure tests are deterministic; run-twice →
+      so scheduler failure tests are deterministic; execute-twice →
       identical-hashes tests
 - [x] M1.5 Scheduler (`sima-scheduler`): task-source interface (yields
       currently-runnable tasks from config + store state; the flat batch is
@@ -187,7 +187,7 @@ Phase-level decisions:
       the program execution → `Rejected`; a panic anywhere else in the
       scheduler is a SIMA fault → `Err`. The store models only success (a
       `TaskRecord` records artifacts), so a definitive failure is journal-only:
-      it terminates the run, writes no manifest, and leaves the store clean and
+      it terminates the search, writes no manifest, and leaves the store clean and
       resumable (committed successes remain, no failure marker), so fixing the
       cause and re-running the same config re-executes only the unfinished
       work. This is the final design, not a placeholder — correct code never
@@ -195,12 +195,12 @@ Phase-level decisions:
       M1.4-deferred decision; `Stats` stays opaque and empty-costs-nothing.)
 - [x] M1.6 Config + pipeline + CLI (`sima-pipeline`, `sima`): one `sima.toml`
       with two sections — an identity section (root_seed, format, generator,
-      params) canonicalized into the `RunConfig` bytes and thus `RunId`, and an
+      params) canonicalized into the `SearchConfig` bytes and thus `SearchId`, and an
       execution section (worker count, timeouts, retry cap — the file form of
       M1.5's `ExecutionConfig`, operational and never hashed); pipeline
       orchestration with static format-id →
       implementation match; orchestrator lease file; typed progress events
-      rendered by the CLI; basic `sima status <run>` from the journal;
+      rendered by the CLI; basic `sima status <search>` from the journal;
       graceful interrupt, resume, re-evaluation pass; crash-injection
       harness (subprocess SIGKILL at controlled crashpoints —
       mid-object-write, between object and index, mid-lease, during
@@ -224,7 +224,7 @@ organizing concern.
 Phase acceptance: the toolkit runs a WGSL compute kernel end to end on the
 local GPU (compile, allocate, transfer, dispatch, read back); float
 multi-channel grid state round-trips through the store as an opaque snapshot;
-a run split into a chain of segments and resumed equals an unsegmented run of
+a search split into a chain of segments and resumed equals an unsegmented search of
 equal length.
 
 - [x] M2.1 `sima-toolkit-wgsl` (`crates/toolkits/`): WGSL → naga → ash compute
@@ -251,28 +251,28 @@ equal length.
       source yields the next uncommitted task in each chain (successor keys
       derived from produced state hashes), plugging into M1.5's interface.
       Segment length k comes from config and must be deterministic, because a
-      segment boundary is a committed task whose key enters the run manifest,
+      segment boundary is a committed task whose key enters the search manifest,
       and the same config must produce the same manifest (P1 acceptance a).
       Segments are the portable resume point that `sima migrate` (P4) ships in
-      a run closure, and the leasable unit for distribution. General over
+      a search closure, and the leasable unit for distribution. General over
       families. Determinism check: N steps + resume ≡ 2N steps on a pinned
       backend.
       (b) Resume checkpoints — the disposable crash-resume mechanism. During
       execution, every X steps or every T wall-clock seconds (from config, and
       free to choose because a checkpoint enters no hash and no manifest), the
-      running task writes its full continuation state to a mutable per-run
-      scratch slot (`runs/<run-id>/checkpoint/<chain>`), overwriting the prior
+      running task writes its full continuation state to a mutable per-search
+      scratch slot (`searches/<search-id>/checkpoint/<chain>`), overwriting the prior
       write — latest-only, so it costs one state per chain and needs no
       deletion. The write holds everything required to continue identically to
-      an uninterrupted run: grid state, step index, the counter-based PRNG's
+      an uninterrupted search: grid state, step index, the counter-based PRNG's
       counter (one integer), and domain aux. On start a task resumes from its
       scratch checkpoint if present, else from its segment input; the committed
       result is identical either way, so this is a local capability inside
       execution that touches no key, manifest, or work decomposition. Only the
       final result is held deterministic; checkpoint timing is not.
-      Result/run reclamation: committed segment states and result snapshots do
+      Result/search reclamation: committed segment states and result snapshots do
       accumulate. A reference-guarded deletion primitive — remove an object
-      only when no live manifest references it; remove a run's exclusive
+      only when no live manifest references it; remove a search's exclusive
       closure — lands when result objects first fill disk (M3.4 at the latest,
       earlier if M2.2/M2.3 test runs pile objects up), not before. It is the
       same retention lever M8.2 formalizes; it arrives early only because
@@ -284,15 +284,15 @@ The near-term research targets, running end to end and explorable: reaction-
 diffusion and Neural CA (Lenia is descoped to future work). Each lands as a
 domain (CPU reference + WGSL kernel + seeded generator) on the P2 toolkit and
 float foundation. Determinism
-is at the pragmatic per-backend level — deterministic run to run on one
+is at the pragmatic per-backend level — deterministic search to search on one
 machine, exact where it is cheap — without the cross-substrate tolerance
 apparatus, which is future work. The point is having the families in hand and
 iterating.
 
 Phase acceptance: NCA runs through the full spine (generate → execute
 → commit → inspect) from a `sima.toml`; a local search over a float family
-completes and records per-candidate stats; a recorded run re-evaluates from
-the store without re-execution; results reproduce run to run on the dev
+completes and records per-candidate stats; a recorded search re-evaluates from
+the store without re-execution; results reproduce search to search on the dev
 machine.
 
 - [x] M3.1 Reaction-diffusion (Gray-Scott): the simplest float family — 2
@@ -349,24 +349,24 @@ machine.
       where cadence tuning first meets measured GPU throughput and real
       state sizes.
 
-      Run: the Gray-Scott family (`examples/gray-scott-search.toml`), 1000
+      Search: the Gray-Scott family (`examples/gray-scott-search.toml`), 1000
       candidates on a 128×128×2 grid over 2000 steps, two workers. Recorded on
       the dev GPU:
       - wall-clock ≈ 619 s (≈ 10.3 min), ≈ 1.6 committed tasks/s;
       - store 143 MB, 3003 objects (1000 states + 1000 records + 1000 specs +
         the shared config, params, and environment);
-      - re-evaluation of the finalized run re-finalizes in ≈ 36 ms, committing
+      - re-evaluation of the finalized search re-finalizes in ≈ 36 ms, committing
         nothing and touching no executor;
-      - reference-guarded removal of the run empties the store to its skeleton
+      - reference-guarded removal of the search empties the store to its skeleton
         (3003 objects, 1000 index entries).
 
       CAS cost decision: keep verified reads and per-object fsync unchanged.
-      The measured write path (≈ 0.1 s over the run's 1000 snapshots) is under
+      The measured write path (≈ 0.1 s over the search's 1000 snapshots) is under
       0.05 % of the search wall-clock, and verified-read throughput
       (1.7–1.9 GB/s) is far above the 500 MB/s floor below which hashing, not
       I/O, would bound a full-closure read. Neither the bulk unverified read
       nor group-commit fsync is warranted at this workload.
-- [x] M3.5 TUI observer mode: `sima tui` on a run another orchestrator holds
+- [x] M3.5 TUI observer mode: `sima tui` on a search another orchestrator holds
       observes it live — journal tail seeded and followed through one offset,
       lock probe for holder and liveness, take-over through the normal resume
       path once the lock frees.
@@ -378,7 +378,7 @@ workload. The scheduler contract from M1.5 gains transports. Content-addressed
 idempotent tasks make at-least-once delivery, retry, dedup, and spot-check
 verification safe by construction.
 
-Phase acceptance: the same config run (i) locally single-worker and (ii)
+Phase acceptance: the same config executed (i) locally single-worker and (ii)
 spread across processes, multiple GPUs, and one SSH remote yields identical
 manifests whenever every task lands on the same device class — determinism
 is transport-invariant. Heterogeneous device sets are first-class and
@@ -386,10 +386,10 @@ throughput-first: assignment is greedy (any free worker pulls the next
 unbound chain), a chain binds to the device class that first picks it up
 and stays there across segments, retries, and resumes, and a resume whose
 recorded class is absent from the current device set rebinds the chain
-loudly (journaled) and converges — a run always continues across hardware
+loudly (journaled) and converges — a search always continues across hardware
 changes. Device binding is derived operational state, never identity: the
-run id is device-independent, and mixed-set float manifests are
-schedule-dependent by design (single-class runs remain the per-backend
+search id is device-independent, and mixed-set float manifests are
+schedule-dependent by design (single-class searches remain the per-backend
 determinism mode; results from two backend classes are compared
 within tolerance, never asserted bit-equal).
 Killing a remote worker mid-lease converges through retry with no manifest
@@ -408,19 +408,19 @@ difference.
       case-insensitive name substring or exact vendor:device hex pair, plus
       per-device `workers`; no tables = today's single-device selection);
       placement is greedy with durable chain stickiness — a chain binds to
-      the class that first pulls it, recorded in a per-run operational slot
+      the class that first pulls it, recorded in a per-search operational slot
       beside the checkpoint slots, honored across resume, rebound with a
       journaled event when the class is absent; the binding crosses to the
       child in `Hello` (protocol v2) and `Ready` reports the bound device
       name back for the journal; the toolkit gains device enumeration and
       selection by (vendor id, device id, member); `sima status` shows the
-      run's device composition. Device identity never enters task keys or
+      search's device composition. Device identity never enters task keys or
       the environment hash (driver provenance is M8.3).
 - [x] M4.3 Remote worker over SSH, against a manually provisioned machine.
       Settled at elaboration; split into three sequential PRs:
       (a) the two pre-existing test flakes (orchestrator-lock race in the
       segmented suite; resume-progress undercount in the crash suite —
-      `RunStarted` gains a store-derived committed count so the display
+      `SearchStarted` gains a store-derived committed count so the display
       never depends on journal-flush timing);
       (b) the have/want store sync, standalone in `sima-store` over frame
       I/O lifted into `sima-core`: records and referenced CAS objects only
@@ -438,7 +438,7 @@ difference.
       stay global across machines and protocol v3 makes `Ready` report
       the driver version, journaled with the host in `WorkerBound`;
       `[[execution.remote]]` entries carry per-remote device tables,
-      resolved at run start through a `sima-worker --enumerate` probe;
+      resolved at search start through a `sima-worker --enumerate` probe;
       `sima status` shows per-host composition; acceptance runs over
       `ssh localhost`. The ssh acceptance suite is written and gated on a
       `SIMA_TEST_REMOTE` destination, pending the first SSH-reachable host;
@@ -450,7 +450,7 @@ difference.
       usable from every crate at every layer, placed at or near `sima-core`
       so the strict downward layering holds and any layer can emit without an
       upward edge. It carries the typed lifecycle events M1.5 defines plus
-      cross-process span and causality context. The durable per-run journal
+      cross-process span and causality context. The durable per-search journal
       stays one sink; a live-aggregation collector is the second. This is the
       deferred half of the M1.5 logging split: the concept is separated at
       M1.5 (typed events vs. journal sink), and the cross-crate facade lands
@@ -460,47 +460,47 @@ difference.
       a `Record` carrying a required `ts_ms` stamp, cloneable `Emitter`s, and
       one `Collector` thread that stamps each event, appends the journal line
       through the `DurableSink` the store implements, then hands the record to
-      the run's single observer. Causality rides the events as natural keys
-      (run, task, attempt, worker, host), not synthetic spans. Protocol v4
+      the search's single observer. Causality rides the events as natural keys
+      (search, task, attempt, worker, host), not synthetic spans. Protocol v4
       adds a `ToParent::Event` frame carrying a child-produced event; the first
       producers are executor-panic diagnostics and captured worker stderr, each
-      correlated to its task. Diagnostics are excluded from run identity — a
-      run with diagnostics commits a manifest byte-identical to a silent one.
+      correlated to its task. Diagnostics are excluded from search identity — a
+      search with diagnostics commits a manifest byte-identical to a silent one.
 
 Expected to be re-split when reached; remote transport hides surprises.
 
-## P5 — Run control & observability
+## P5 — Search control & observability
 
 The view layer over the lifecycle journal, positioned before slingshot: paid
 remote hardware is not operated blind. The journal and state machine already
 exist (P1); this phase builds the surfaces that read them.
 
-Phase acceptance: a live multi-worker run is observable end-to-end (status,
+Phase acceptance: a live multi-worker search is observable end-to-end (status,
 inspect, follow, timeline) from another terminal; observation is read-only
-over journal and store and never perturbs the run — proven by manifest
-equality between an observed and an unobserved run.
+over journal and store and never perturbs the search — proven by manifest
+equality between an observed and an unobserved search.
 
 - [x] M5.1 Per-task inspection folded into `sima status` along a content/scope
       axis: `status --task <key>` (attempt timeline), `status --failed`
-      (failure digest), `report --task <key>`, `report --all` — run and task
+      (failure digest), `report --task <key>`, `report --all` — search and task
       state, attempt history, durations, failure summaries over the journal.
-      Worker host attribution is journaled; reading a remote run's journal
+      Worker host attribution is journaled; reading a remote search's journal
       lands in M5.2
 - [x] M5.2 Live follow: workers emit events over their transport, the
       orchestrator journals them; follow tails the journal into one
       aggregated view (works from another terminal against a running
       orchestrator, local or SSH)
-- [x] M5.3 Run timeline and summary report: throughput, retry rates, worker
-      utilization per run
+- [x] M5.3 Search timeline and summary report: throughput, retry rates, worker
+      utilization per search
 
 ## P6 — Slingshot
 
 One command sends an experiment to rented hardware and brings results home:
-provision, bootstrap, run, sync, tear down. Teardown must be guaranteed —
+provision, bootstrap, execute, sync, tear down. Teardown must be guaranteed —
 leaked instances are leaked money.
 
 - [x] M6.1 Provider abstraction: provision / destroy / list / price query;
-      instance lifecycle owned by the run, teardown on success, failure, and
+      instance lifecycle owned by the search, teardown on success, failure, and
       interrupt. `list` returns concrete, normalized offers, not instance
       types — (GPU model, VRAM, GPU count, $/hr, host reliability, verified
       status, disk, bandwidth, location, offer id); a marketplace query is
@@ -523,7 +523,7 @@ leaked instances are leaked money.
       so bootstrap implies publishing the image or loading it on-instance
       after boot
 - [x] M6.3 On-worker stats reduction: kernel-side population/activity counts
-      so remote runs return stats always, snapshots only on a cheap predicate
+      so remote searches return stats always, snapshots only on a cheap predicate
       (placed here as the bandwidth guard; the funnel's metrics consume the
       same reduction — the mechanism is shared). "Stats always" covers the
       failed-evaluation case: M1.5 gave `Outcome::Failed` stats symmetric with
@@ -535,10 +535,10 @@ leaked instances are leaked money.
       threshold family-agnostically, plus an optional opaque family blob for
       anything richer — decide the shape here
 - [x] M6.4 Budget guard: total spend cap and rental-phase wall-clock limit
-      per run, durable spend accounting
-- [x] M6.5 Distributed run: one local orchestrator drives a provisioned
-      fleet beside the local devices. Run config declares (provider,
-      constraints, objective, machine count); at run start the pipeline
+      per search, durable spend accounting
+- [x] M6.5 Distributed search: one local orchestrator drives a provisioned
+      fleet beside the local devices. Search config declares (provider,
+      constraints, objective, machine count); at search start the pipeline
       acquires through M6.1's loop against the M6.2 backend and registers
       each Ready instance as an SSH worker — the M4.3 framed stdio
       protocol through `ssh <host> podman run -i` on the published image —
@@ -569,7 +569,7 @@ leaked instances are leaked money.
 - [x] M6.6 Machine reputation: rented machines are judged by
       observable operational behavior, never by output verification —
       workers cannot touch the store, so a bad machine's whole
-      influence is operational (vanish mid-run, never become ready,
+      influence is operational (vanish mid-search, never become ready,
       fail the worker probe), and results need no cross-checking
       apparatus. Each such behavior is recorded durably per
       marketplace machine (provider-scoped machine id) beside the
@@ -603,32 +603,32 @@ leaked instances are leaked money.
       and results are compared against the CPU reference per backend, never
       across backends. Ships with an example config and end-to-end coverage
       in `sima-integration`; the reduced M6.5 acceptance (CPU-class remote
-      workers) is superseded by a full GPU-fleet acceptance run on this
+      workers) is superseded by a full GPU-fleet acceptance search on this
       toolkit
-- [x] M6.8 Machine configuration model: a run declares the machines it can use
+- [x] M6.8 Machine configuration model: a search declares the machines it can use
       by naming them once. `[host.<name>]` is one machine — reached over ssh at
       the entry's own name unless `ssh` overrides it, or rented when it names a
       `provider`; `[host_class.<name>]` declares several identical machines in
       one entry, scaled by `count` alone, with addresses derived from the name
       unseparated and unpadded (`lab1 … lab200`), or by an explicit `ssh` list
-      that is then itself the count; `[fleet]` lists the members a run may draw
+      that is then itself the count; `[fleet]` lists the members a search may draw
       on, so a fleet is the collective and never names an element;
-      `[orchestrator]` is this machine, one per run by construction, and its
-      `migrate` key names the host a migration moves the run onto. `[execution]`
+      `[orchestrator]` is this machine, one per search by construction, and its
+      `migrate` key names the host a migration moves the search onto. `[execution]`
       became `[config]`, carrying the global settings alone; the worker layout
       it used to hold moved onto `[orchestrator]`. Owned and rented is the
       absence or presence of `provider`, not a separate concept, and each form
       is one enum variant past the load, so a key belonging to the other form is
       rejected naming the key and the form. Machines beyond the orchestrator are
-      engaged by `sima run --fleet` (and `sima tui --fleet`), so a config
-      declares what a run may use and the invocation decides what it does;
+      engaged by `sima search --fleet` (and `sima tui --fleet`), so a config
+      declares what a search may use and the invocation decides what it does;
       without the flag the fleet is never resolved, so no provider is
       constructed and no credential is read. Replaced `[[execution.remote]]` and
       the renting `[fleet]`, which described one subject in three shapes none of
       which could be referred to by name. `fleet.rs` is now membership
       resolution alone; renting moved to `rental.rs`, generalised from one
       fleet-wide policy to any number of rented entries, each under its own
-      provider and shortfall policy and all under the run's single budget, which
+      provider and shortfall policy and all under the search's single budget, which
       the supervisor assesses once per heartbeat. The transports are named for
       how a worker is launched rather than for the section that used to reach
       them — `ContainerTransport`, `SshTransport`, `SpawnMode`,
@@ -639,38 +639,38 @@ leaked instances are leaked money.
       expressible. No backwards compatibility: examples, tests, and documents
       moved with it
 - [x] M6.9 End-to-end slingshot consolidation (phase acceptance): `sima migrate`
-      moves a run's orchestrator onto the machine `[orchestrator].migrate` names
+      moves a search's orchestrator onto the machine `[orchestrator].migrate` names
       — push the closure, resume there, follow live, pull the results, tear the
-      rental down — with the manifest byte-identical to a run that was never
+      rental down — with the manifest byte-identical to a search that was never
       interrupted. The have/want store sync it composes existed already (M4.3,
       standalone); it gains an object scope, so a push carries every record plus
       each chain's frontier state rather than every earlier one, and the two
       halves are joined by a new `sima sync-serve` over the same hop. The far
-      run is detached with `setsid` and its pid recorded, so a dropped
+      search is detached with `setsid` and its pid recorded, so a dropped
       connection leaves the destination computing: re-running reattaches, by the
-      instance ledger for a rented machine and by `run.pid` for a machine of
+      instance ledger for a rented machine and by `search.pid` for a machine of
       yours. The ledger gained the role a rental was taken for, so
-      reconciliation spares a machine hosting a migrated run unless
+      reconciliation spares a machine hosting a migrated search unless
       `sima reconcile --hosted` asks for it, and `adopt` rebuilds a guard over
       one without rewriting the record its charged window is anchored in.
       Journals do not sync, so each record the follow delivers is forwarded into
       the local journal through the collector every other event crosses. A
       backend now says how its machines are reached (`Reachability`) rather than
       the pipeline inferring it from the provider id. Two defects the acceptance
-      exposed: a run's journal and its lock become observable at different
-      moments, so a follow attaching the instant it started the far run was told
-      the run was never started, and a rental's host key was being written into
+      exposed: a search's journal and its lock become observable at different
+      moments, so a follow attaching the instant it started the far search was told
+      the search was never started, and a rental's host key was being written into
       the operator's `known_hosts`, where it accumulates and where a later
       rental at a recycled address is then refused. The acceptance runs in the
       ordinary gate twice over — once reached in process, once over a real ssh
       hop against a throwaway server the test stands up and tears down. The live
-      proof P6 promises is in: a run interrupted here after 24 of its tasks,
+      proof P6 promises is in: a search interrupted here after 24 of its tasks,
       migrated onto a rented RTX 4090, resumed there for the remaining 74,
       followed live, pulled home and finalized, with the manifest byte-identical
-      to an uninterrupted reference run across two different GPU parts, the
+      to an uninterrupted reference search across two different GPU parts, the
       rental closed out at $0.057, and reconciliation finding nothing left with
       or without `--hosted`. Renting it exposed three defects no local tier
-      reaches, each fixed before the run that passed: an offer lost to another
+      reaches, each fixed before the search that passed: an offer lost to another
       renter reported as `invalid_args` rather than by its own token aborted the
       offer walk the marketplace exists to survive; a first ssh refused while a
       ready instance's proxy was still routing failed the migration outright;
@@ -732,7 +732,7 @@ portability (P1 acceptance (d)) hold across the boundary.
       documentation and no logic — the two contract traits with their whole
       vocabulary, the device binding and class, the identity-bearing values a
       boundary is handed, and the `sima-core` foundations including `prng`, which a
-      generator needs because the `rand` crate is barred from result paths. Run
+      generator needs because the `rand` crate is barred from result paths. Search
       configuration, task identity and commitment, content addresses, transport
       framing, and crash injection stay internal, and the module docs carry each
       omission with the responsibility it belongs to. `sima-example-executor`
@@ -768,8 +768,8 @@ portability (P1 acceptance (d)) hold across the boundary.
       mints the partition profile alongside — `10de:2330:1g.10gb` — and the
       profiles are separate classes, so the invariant that members of a class
       substitute for each other holds again. No prefix names the backend or the
-      identity scheme, because classes are compared only within one run and a
-      run has one format, one domain, one backend. Both types lost `Copy`, so
+      identity scheme, because classes are compared only within one search and a
+      search has one format, one domain, one backend. Both types lost `Copy`, so
       the per-pull queue scan borrows a task's binding rather than cloning a
       class per queued entry. A placement slot the scheduler cannot decode is
       read as absent and its chain binds again, matching the stance the store
@@ -797,16 +797,16 @@ portability (P1 acceptance (d)) hold across the boundary.
       pays no process and no pipe; a configured format is answered by
       `BinarySource` over the domain service protocol, one session held for the
       config's life. The registry is built where the config resolves and the
-      run's own translations go through it, so a program that cannot answer for
+      search's own translations go through it, so a program that cannot answer for
       the format it is declared under fails at load with no store behind it.
       Sufficiency is a test rather than a claim: `sima-worker --serve-domain`
       serves the in-tree formats through the plugs, and an in-tree format
-      driven through `BinarySource` produces the run id and every task key the
-      same run produces by direct call. `sima-example-executor` is now a binary
+      driven through `BinarySource` produces the search id and every task key the
+      same search produces by direct call. `sima-example-executor` is now a binary
       implementing both plugs with `sima-api` as its only sima dependency, and
       a full search runs through it. Not done here: a registered format's tasks
       run in its own binary on the orchestrator's own machine — a fleet machine
-      still runs the sima image's worker, and a migrated run's synthesized
+      still runs the sima image's worker, and a migrated search's synthesized
       config carries no `[domain.*]` entry, so a registered format fails there
       naming the id — and nothing folds a program's identity into the
       environment hash, which is M7.5.
@@ -838,27 +838,27 @@ portability (P1 acceptance (d)) hold across the boundary.
       (Landlock, seccomp, namespaces, mandatory containers), which stays a
       deliberate future opt-in with the container transport as its carrier; a
       deadline on `Generate`; fleet routing of registered formats and the
-      migrated run's absent `[domain.*]` entry, both P9; and program identity
+      migrated search's absent `[domain.*]` entry, both P9; and program identity
       in the environment hash, which is M7.5.
 - [x] M7.5 Identity and packaging: fold a custom executor's identity (version,
-      build/content hash) into the environment hash so runs stay reproducible
+      build/content hash) into the environment hash so searches stay reproducible
       and portable; define how a custom family is packaged, versioned, and
       pinned. Settled the other way on the hash: **identity stays
       self-declared** and the environment hash gains no new input, because an
       automatic binary digest inside it turns a resume through a changed
       program into a silent restart from zero — new keys, an empty frontier, no
-      error — which takes the decision away from the user. Run ids and task
+      error — which takes the decision away from the user. Search ids and task
       keys are therefore byte-identical to before the milestone. What was added
       is provenance with a gate: the registry reads the program file each
       `[domain.*]` entry names and holds its blake3 digest, every session
       journals `ProgramBound { format, binary, digest }` beside `WorkerBound`,
       and `orchestrate` compares that record against the file on disk under the
-      run lock before any task runs — a difference stops the run naming the
+      search lock before any task runs — a difference stops the search naming the
       format, the path, both digests, and `--accept-binary`, the flag that
-      drives it anyway and rebinds the run to the accepted build. `sima migrate`
-      now refuses a config-routed run where the migration is asked for, ahead
+      drives it anyway and rebinds the search to the accepted build. `sima migrate`
+      now refuses a config-routed search where the migration is asked for, ahead
       of the destination, the store, the lock, and any provider, since the
-      synthesized far config carries `[run]`, `[config]`, and `[orchestrator]`
+      synthesized far config carries `[search]`, `[config]`, and `[orchestrator]`
       alone. The packaging convention is recorded in `docs/architecture.md`
       under "Identity and packaging of a registered program": one
       self-contained binary, versioned by the components it declares, with the
@@ -868,7 +868,7 @@ portability (P1 acceptance (d)) hold across the boundary.
       orchestrator's own machine, and settled the other way in M9.2: sima ships
       the payload, so the digest a config would assert is already known and the
       check belongs on the handshake; per-record build provenance, so a fresh
-      run reusing an earlier run's records passes no gate; and a deadline on
+      search reusing an earlier search's records passes no gate; and a deadline on
       `Generate`, still M7.4's.
 - [x] M7.6 The published protocol and a program in another language: the
       phase's proof that no fork is required. Settled what the requirement
@@ -927,7 +927,7 @@ model or metric. Last active phase before the pause.
       carries one invariant — a loose file goes only once a pack holds its
       object, a pack only once its replacement is durable — so every live
       object is readable at one location or two, never zero, and both
-      reference-guarded deletions (`remove_run` and the new `gc`) run through
+      reference-guarded deletions (`remove_search` and the new `gc`) run through
       one primitive that knows both representations. `sima pack <store-dir>`
       is the verb, `--gc` the sweep, and a store past six figures of loose
       objects is told to run it. A `format` marker at the store root refuses a
@@ -938,16 +938,16 @@ model or metric. Last active phase before the pause.
       delta compression between objects.
 - [x] M8.2 Snapshot retention policy: what is kept, for how long, and what
       re-evaluation minimally requires. The policy is the levers that already
-      existed, stated and proven: a finalized run's closure is kept whole until
-      the operator runs `sima rm` or `sima pack --gc`, both run-grained and
+      existed, stated and proven: a finalized search's closure is kept whole until
+      the operator runs `sima rm` or `sima pack --gc`, both search-grained and
       reference-guarded, and re-evaluation reads the record spine — config,
       task index, records, journal — and never the snapshots. What landed: the
-      CLI test that deletes a finalized run's snapshot objects and asks for the
+      CLI test that deletes a finalized search's snapshot objects and asks for the
       run again, the `Retention` passage in `docs/architecture.md`, and both
       search examples completed to the whole config schema with a load variant
-      per knob group. Rejected at elaboration: a mid-grain "thin a run"
+      per knob group. Rejected at elaboration: a mid-grain "thin a search"
       deletion — the snapshot predicate prevents the dominant waste at commit
-      time, and a thinned-run state would cost retention side-files and closure
+      time, and a thinned-search state would cost retention side-files and closure
       and sync changes for no observed need
 - [x] M8.3 Driver provenance in the environment hash: a driver update can shift
       float results, and the driver is currently journaled as operational
@@ -961,26 +961,26 @@ model or metric. Last active phase before the pause.
       machine-read value has nowhere to enter them — and `WorkerBound` remains
       the per-spawn audit trail. Hardened with the `DriverChanged` journal
       event: a session compares each spawn's reported driver against the last
-      one the run's journal recorded for the same host and device, journals
-      one event per transition, and the CLI renders it as a warning; the run
-      proceeds. Re-evaluation of a finalized run opens no device, so that path
+      one the search's journal recorded for the same host and device, journals
+      one event per transition, and the CLI renders it as a warning; the search
+      proceeds. Re-evaluation of a finalized search opens no device, so that path
       stays journal-audit only, recorded as such in
       `docs/architecture.md` (`Driver provenance`)
 
 ## P9 — Registered programs beyond the orchestrator's machine
 
 A format bound through `[domain.*]` ran only where the orchestrator ran. The
-phase lifts that: the program travels to the machines a run uses and its build
-is agreed across them, whether the run moves onto one machine or spreads across
-several. It closes by making a run that left this machine outlive the command
+phase lifts that: the program travels to the machines a search uses and its build
+is agreed across them, whether the search moves onto one machine or spreads across
+several. It closes by making a search that left this machine outlive the command
 that sent it. Fleet under a migrated orchestrator is out of scope and recorded
 at the end of the phase with its reasons.
 
-The decision the whole phase rests on: **the program travels per run.** sima
+The decision the whole phase rests on: **the program travels per search.** sima
 ships the bytes and a script installs them, so a change reaches a machine
 without publishing anywhere and without rebuilding an image.
 
-- [x] M9.1 A registered program travels with its migrated run, absorbing M9.4:
+- [x] M9.1 A registered program travels with its migrated search, absorbing M9.4:
       two keys on the `[domain.*]` entry — a `payload` path, one file or one
       directory, and an `install` script the destination runs over it — plus
       `payload_digest`, which is what the synthesized far config states. The
@@ -988,7 +988,7 @@ without publishing anywhere and without rebuilding an image.
       an interpreter's package, a compiled binary, a virtualenv, a symlink into
       an existing image. Settled points:
       - **The payload is bytes sima sends, never a thing the far side
-        fetches**, so a local edit is a run away from a remote machine and
+        fetches**, so a local edit is a search away from a remote machine and
         nothing is published to reach it. What the payload carries is the
         program alone; an interpreted one's runtime and SDK ride in the
         machine's image beside `sima-worker`.
@@ -996,24 +996,24 @@ without publishing anywhere and without rebuilding an image.
         content-addressed objects and one manifest object names them; the
         manifest's hash is the digest, and the sync's want/have negotiation is
         what skips the bytes the destination already holds.
-      - **Installation happens inside the far `sima run` at config load**,
+      - **Installation happens inside the far `sima search` at config load**,
         stamped by digest, so a reattach installs nothing and a changed payload
         reinstalls exactly once. No installation verb exists. The entry point
         is found by convention at `$SIMA_INSTALL_DIR/program`; `install` is
         optional for a single-file payload and required for a directory.
-      - **An install that fails fails the run, naming the machine** and the
-        script's own last lines, which reach the operator through the far run's
+      - **An install that fails fails the search, naming the machine** and the
+        script's own last lines, which reach the operator through the far search's
         log — every far-side load failure dies before journaling, so the attach
         reads that log.
-      - **`sima sync-serve` addresses the store and the run** rather than a
+      - **`sima sync-serve` addresses the store and the search** rather than a
         config, since loading a config would spawn the program the session
-        exists to deliver; it derives its key set from the run's journal.
+        exists to deliver; it derives its key set from the search's journal.
       - **`sima migrate <config> --accept-binary`** travels to the far start
-        argv: the far run's own binding guard refuses a changed installed
+        argv: the far search's own binding guard refuses a changed installed
         program, and the acceptance is the operator's.
-      - `payload` and `install` are operational — a run's id is unchanged by
+      - `payload` and `install` are operational — a search's id is unchanged by
         adding or removing them.
-- [x] M9.2 Build agreement across machines: the payload digest is what a run
+- [x] M9.2 Build agreement across machines: the payload digest is what a search
       believes answered for the format, and a remote copy that drifted from it
       breaks the one promise the store makes. The belief is now on the wire.
       What was settled:
@@ -1030,7 +1030,7 @@ without publishing anywhere and without rebuilding an image.
       - **The presence rule is symmetric**, enforced in one place beside the
         version check: another digest, none where a program was sent, and one
         where none was are all refused naming both sides, each meaning the
-        machine runs something other than what the run put there.
+        machine runs something other than what the search put there.
       - **`PROTOCOL_VERSION` stays 1** while `Ready` gains the trailing field:
         old and new frames never meet, so the published document carries the
         new shape under the same number.
@@ -1047,13 +1047,13 @@ without publishing anywhere and without rebuilding an image.
       machine that answers is one that received the program. Settled points:
       - **Delivery is the second form of an existing verb.** It is a store
         sync's far half plus the install a config load already performs, so
-        `sima sync-serve <dir> --payload <D> [--sdk <S>]` joins the `--run`
+        `sima sync-serve <dir> --payload <D> [--sdk <S>]` joins the `--search`
         form rather than a verb of its own; both stay out of the usage text as
         machine-facing halves of a transport.
       - **The machines share one delivery directory** under the `root` their
         entry already names — `<root>/programs/`, holding a store, one program
         tree per payload digest, and one SDK tree per package digest. The store
-        is shared across runs, so an unchanged program crosses the wire once
+        is shared across searches, so an unchanged program crosses the wire once
         ever, and both trees are built under the stamp, so a repeat delivery
         runs no install.
       - **The SDK ships from the orchestrator's build.** The program on the
@@ -1072,18 +1072,18 @@ without publishing anywhere and without rebuilding an image.
         delivered program over its own domain service; readiness asks about no
         format at all, which `sima-worker --enumerate-devices` alone answers.
       - **A machine that cannot receive the program costs what it should**: a
-        machine of yours fails the run, a rented one records `InstallFailed`,
+        machine of yours fails the search, a rented one records `InstallFailed`,
         is excluded, and is replaced.
 - [x] M9.4 Detach as a verb: attaching, detaching, and winding down are things
       an operator asks for by name, and no signal — deliberate or accidental —
-      ends a far run. What was settled:
-      - **Ctrl-C on `sima migrate` detaches**, printing where the run is and
+      ends a far search. What was settled:
+      - **Ctrl-C on `sima migrate` detaches**, printing where the search is and
         both ways back, and exits 0. `SIGHUP` and `SIGTERM` stay unhandled,
         because the default death now coincides with the safe intention. An
         interrupt during the acquisition keeps its own meaning: there is no far
-        run yet to leave behind, so it abandons the offer walk.
+        search yet to leave behind, so it abandons the offer walk.
       - **`sima recall <config>` is the inverse verb.** It winds a driving far
-        run down, reads what it ended as, pulls, settles, and destroys the
+        search down, reads what it ended as, pulls, settles, and destroys the
         rental; over one that has ended it collects without restarting
         anything, which is what re-running `sima migrate` used to be the only
         way to do. It never places, pushes, starts, or rents — the journal read
@@ -1091,26 +1091,26 @@ without publishing anywhere and without rebuilding an image.
         far-side failure home as a failure.
       - **Budget exhaustion still winds down** while attached: money is the one
         thing that cannot wait for an operator to come back.
-      - **`[budget] max_wall_clock_ms` is the run's own deadline**, measured
+      - **`[budget] max_wall_clock_ms` is the search's own deadline**, measured
         from the start of each execution, with `0` stating no ceiling. It is
-        kept where no bill runs against the time: a local run and a machine of
+        kept where no bill runs against the time: a local search and a machine of
         yours, whose far config carries the key. It does not travel to a rented
         destination, since a rental bills by the hour rather than by use and a
-        run stopped early there saves nothing while leaving a machine that
+        search stopped early there saves nothing while leaving a machine that
         bills and computes nothing. `max_spend_usd` travels nowhere, because
         enforcing it means destroying a machine and the provider key never
-        leaves this machine — which is also why a far run cannot end its own
+        leaves this machine — which is also why a far search cannot end its own
         billing.
-      - **A far run that dies before journaling is reported as its death.** The
-        follow opens before the far run starts, which makes its first poll
+      - **A far search that dies before journaling is reported as its death.** The
+        follow opens before the far search starts, which makes its first poll
         exactly the journal an earlier session left; nothing arriving after it,
-        over a far process that is gone, is a run that journaled nothing. The
+        over a far process that is gone, is a search that journaled nothing. The
         milestone's own phrasing is corrected here: the follow protocol needed
-        no session boundary of its own, only an opening that precedes the run.
+        no session boundary of its own, only an opening that precedes the search.
         `FOLLOW_PROTOCOL_VERSION` is 1 before and after.
 
 **A registered format reaches an owned destination declaring a container.** The
-far run's containerized pool would probe and spawn the image's own worker, which
+far search's containerized pool would probe and spawn the image's own worker, which
 does not carry the program: the destination installs it beside the config, and
 nothing mounts that tree into the container or points the pool at it. Every
 other combination works — an owned destination without a container, a rented one
@@ -1119,7 +1119,7 @@ shape of the lift: what is missing is a far config that states it, since the
 synthesized `[orchestrator]` carries the destination's declared container
 verbatim and knows nothing of the tree the far load will fill.
 
-**Fleet under a migrated orchestrator is out of scope.** A migrated run drives
+**Fleet under a migrated orchestrator is out of scope.** A migrated search drives
 the destination's own workers and no others, which is why the far config drops
 every section naming a machine. Lifting it is not a matter of carrying those
 sections across:
@@ -1129,16 +1129,16 @@ sections across:
 - **Reachability.** `[host.*]` names destinations reachable from the
   orchestrator's own network, which says nothing about what a rented instance
   reaches.
-- **Teardown ownership.** A far orchestrator that dies mid-run leaves rentals
+- **Teardown ownership.** A far orchestrator that dies mid-search leaves rentals
   its own machine acquired, and `sima reconcile` runs from here without knowing
   they exist.
 
 Each is a decision in its own right, and together they are a phase rather than a
 milestone. What the exclusion costs an operator is stated plainly: **many
 machines and one machine are the alternatives** — a fleet needs the
-orchestrator's machine to stay up for as long as the run does, and a migration
+orchestrator's machine to stay up for as long as the search does, and a migration
 is one machine however many devices it holds. Attendance is no longer part of
-the trade: a migrated run survives the operator's departure by design, bounded
+the trade: a migrated search survives the operator's departure by design, bounded
 by its own ceiling and ended by `sima recall`.
 
 
@@ -1155,7 +1155,7 @@ Deliberately simple. The funnel machinery, with the cheapest deterministic
 metrics only; metric research lives in its own track.
 
 Acceptance: verdicts are pure functions of recorded data — re-running the
-funnel over a recorded run reproduces identical verdicts, and changing
+funnel over a recorded search reproduces identical verdicts, and changing
 thresholds re-classifies without any re-execution.
 
 - **Periodic snapshot/stats recording.** Segment boundaries (M2.3) are the
@@ -1166,7 +1166,7 @@ thresholds re-classifies without any re-execution.
   requires the structured `Stats` decided at M6.3 rather than the opaque bytes
   M1.4 shipped: opaque stats would force a per-family decoder here and defeat
   the funnel's family-agnostic design
-- **Staged cheapest-first funnel** plus re-evaluation from recorded runs
+- **Staged cheapest-first funnel** plus re-evaluation from recorded searches
   without re-execution
 
 ### Continuous-family rigor
@@ -1176,7 +1176,7 @@ variants, and scale. The families already run and are explorable (P3); this
 work makes them rigorous and complete.
 
 Acceptance: on one pinned backend class, every float family is bit-identical
-run-to-run, and a seeded search run reproduces its fitness trajectory exactly.
+search-to-search, and a seeded search reproduces its fitness trajectory exactly.
 Cross-backend bit-equality is explicitly not pursued: two backends are two
 program identities with two environments, so no result of one is ever reused
 for the other, and agreement between them is a transcription check at
@@ -1191,8 +1191,8 @@ Driver provenance is M8.3.
   spatially localized parameters (genome becomes a per-region field, not one
   global vector). CPU reference + WGSL kernel + cross-substrate tolerance tests
 - **Search loop over continuous genomes** (ES; gradient-based training is a
-  standing research track — it changes the executor contract from "run" to
-  "run + accumulate gradients")
+  standing research track — it changes the executor contract from "execute" to
+  "execute + accumulate gradients")
 - **Within-launch population batching** for small grids
 
 ### Physarum (agent-field family)
@@ -1215,8 +1215,8 @@ The alternative — float agent state — moves it into that tier; the tradeoff
 resolved when the family is built.
 
 Acceptance: CPU/GPU bit-equality across an agent-count × field-extent ×
-step-count matrix; a segmented agent-field run (compound segment state)
-resumed equals an unsegmented run of equal length, bit-exact.
+step-count matrix; a segmented agent-field search (compound segment state)
+resumed equals an unsegmented search of equal length, bit-exact.
 
 - **Agent-field executor kind** (`sima-domains`): compound state (agent buffer
   ‖ field grid) serialized as one opaque snapshot object; segmentation
@@ -1244,7 +1244,7 @@ Parallel to the phase ladder, each eventually feeding it:
 - **Evaluation / interestingness** — novelty, diversity, complexity metrics;
   the funnel machinery is the harness, the metrics are open research
 - **Gradient-based training** — backprop through CA steps changes the executor
-  contract from "run" to "run + accumulate gradients"; NCA literature
+  contract from "execute" to "execute + accumulate gradients"; NCA literature
   precedent exists
 - **IR / DSL** — composition-as-data over data-parallel primitives
   (map/stencil/reduce, later matmul), one definition compiling to both GPU

@@ -82,7 +82,7 @@ fn final_state(config: &LoadedConfig) -> Result<Vec<u8>> {
 }
 
 #[test]
-fn a_segmented_run_equals_an_unsegmented_run_of_equal_length() -> Result<()> {
+fn a_segmented_search_equals_an_unsegmented_search_of_equal_length() -> Result<()> {
     let dir = tempfile::tempdir().expect("temp dir");
     let segmented = accumulate_config(
         dir.path(),
@@ -223,7 +223,7 @@ fn an_interrupted_chain_resumes_to_the_reference_manifest() -> Result<()> {
 }
 
 #[test]
-fn a_longer_chain_reuses_the_shared_prefix_of_a_shorter_run() -> Result<()> {
+fn a_longer_chain_reuses_the_shared_prefix_of_a_shorter_search() -> Result<()> {
     let dir = tempfile::tempdir().expect("temp dir");
     // Five segments into the shared store.
     let five = accumulate_config(dir.path(), "five.toml", "./store-shared", 10, Some(5), None)?;
@@ -237,7 +237,7 @@ fn a_longer_chain_reuses_the_shared_prefix_of_a_shorter_run() -> Result<()> {
         SearchOutcome::Finalized { .. }
     ));
     // Ten segments over the same store: the first five keys are already
-    // answered, so only the second half searches.
+    // answered, so only the second half runs.
     let ten = accumulate_config(dir.path(), "ten.toml", "./store-shared", 10, Some(10), None)?;
     assert_ne!(
         five.search.id(),

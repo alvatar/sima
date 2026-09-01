@@ -1,5 +1,5 @@
 //! End-to-end acceptance of the Gray-Scott CUDA program through the pipeline
-//! API: a `ca_evolution.gray_scott_cuda` `sima.toml` searches generate → execute →
+//! API: a `ca_evolution.gray_scott_cuda` `sima.toml` runs generate → execute →
 //! commit → inspect to a finalized manifest, a segment boundary leaves the
 //! committed trajectory byte-identical, the same genome evaluated by the two
 //! backends lands on the same grid within tolerance, and a malformed
@@ -202,7 +202,7 @@ fn the_shipped_cuda_search_config_loads() -> Result<()> {
 // The variants below each enable one commented group of the example and load
 // the result, so every knob the file ships is parsed by a test rather than only
 // read by a human. The `[domain."<format>"]` block is in no variant: the binary
-// it names is spawned when the config loads, so enabling it would search a program.
+// it names is spawned when the config loads, so enabling it would run a program.
 
 #[test]
 fn the_shipped_search_config_loads_with_the_snapshot_predicate_enabled() -> Result<()> {
@@ -399,7 +399,7 @@ mod on_device {
     #[test]
     fn both_programs_evolve_the_same_rule_to_the_same_grid() -> Result<()> {
         // The port's acceptance at program level: one genome, two backends, two
-        // full searches through the spine, and grids that agree cell for cell within
+        // full executions through the spine, and grids that agree cell for cell within
         // tolerance. The step count is deliberately short — a rounding difference
         // one backend makes and the other does not compounds with every step, so
         // a long search measures divergence growth rather than transcription

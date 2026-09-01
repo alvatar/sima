@@ -22,7 +22,7 @@ use crate::searches::resolve_search;
 /// search directory already exists.
 ///
 /// The lock is held for the whole removal and releases when this call returns.
-/// Retention searches offline, so the exclusion covers the removal itself.
+/// Retention runs offline, so the exclusion covers the removal itself.
 pub fn remove(config: &LoadedConfig) -> Result<RemovalReport> {
     let store = opened(config)?;
     let search = config.search.id();

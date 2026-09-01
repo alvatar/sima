@@ -3,7 +3,7 @@
 //! and failed tasks and `report` renders them, and a Gray-Scott search with a
 //! `snapshot_when` predicate drops the snapshots of candidates that fail it,
 //! keeps those that pass, journals scalars for every task, and finalizes a
-//! deterministic manifest. Each predicate case searches on both Gray-Scott
+//! deterministic manifest. Each predicate case runs on both Gray-Scott
 //! programs, so the verdict is checked on the WGSL and the CUDA backend alike.
 
 mod common;
@@ -56,7 +56,7 @@ const FORMATS: [(&str, &str); 2] = [
 /// on a 32x32 grid, `steps` per segment, with an optional `snapshot_when`
 /// predicate line. The format id is also the generator id, since both name the
 /// program. `case` and the program's `label` name the config file and its
-/// store together, so each case of each program searches into a store of its own.
+/// store together, so each case of each program runs into a store of its own.
 fn gray_scott_config(
     dir: &Path,
     case: &str,
@@ -136,7 +136,7 @@ fn every_committed_task_has_scalars(events: &[Event]) -> bool {
 }
 
 #[test]
-fn a_stub_run_journals_scalars_and_report_renders_them() -> Result<()> {
+fn a_stub_search_journals_scalars_and_report_renders_them() -> Result<()> {
     // A clean success and a candidate that fails once before committing: the
     // journal carries structured scalars for both the Committed and the Failed
     // events, and `report` renders them generically.
@@ -211,12 +211,12 @@ fn a_stub_run_journals_scalars_and_report_renders_them() -> Result<()> {
     Ok(())
 }
 
-/// Each predicate case searches both Gray-Scott programs, so these need a real GPU and a CUDA device.
+/// Each predicate case runs both Gray-Scott programs, so these need a real GPU and a CUDA device.
 mod on_device {
     use super::*;
 
     #[test]
-    fn a_predicate_run_finalizes_a_deterministic_manifest() -> Result<()> {
+    fn a_predicate_search_finalizes_a_deterministic_manifest() -> Result<()> {
         // The same predicate config search twice into fresh stores finalizes
         // byte-identical manifests: the predicate verdict is a pure function of the
         // deterministic final grid, so it decides identically both times.
@@ -247,7 +247,7 @@ mod on_device {
     }
 
     #[test]
-    fn a_no_predicate_run_keeps_every_snapshot() -> Result<()> {
+    fn a_no_predicate_search_keeps_every_snapshot() -> Result<()> {
         // The pre-milestone behavior: without a predicate every candidate commits
         // its state artifact, unchanged.
         let dir = tempfile::tempdir().expect("temp dir");

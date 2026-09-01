@@ -115,7 +115,7 @@ impl ExecutionConfig {
                 )));
             }
             // The slots of an entry round-robin over its cards, so a class
-            // with no card has nothing to search on.
+            // with no card has nothing to run on.
             if entry.members == 0 {
                 return Err(Error::Validation(format!(
                     "device {} ({}) requires at least one card",
@@ -236,7 +236,7 @@ mod tests {
     #[test]
     fn a_device_entry_with_no_cards_is_rejected() {
         // The slots round-robin over an entry's cards, so a class of none has
-        // nothing to search on.
+        // nothing to run on.
         let error = ExecutionConfig::with_devices(
             vec![DeviceEntry {
                 members: 0,

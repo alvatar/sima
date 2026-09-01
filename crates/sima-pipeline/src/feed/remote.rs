@@ -1,7 +1,7 @@
 //! [`RemoteFeed`] and [`remote_snapshot`]: a search followed on another host,
 //! over one SSH connection.
 //!
-//! The near side spawns `sima follow-serve` on the host the orchestrator searches
+//! The near side spawns `sima follow-serve` on the host the orchestrator runs
 //! on and reads the frames it writes. Nothing about the search is interpreted
 //! here beyond the journal lines the far side forwards: the search id, the store
 //! path, and the lock all belong to that host, and this side renders.
@@ -228,7 +228,7 @@ struct Stream {
     stderr: Option<JoinHandle<String>>,
     /// The ssh process, absent for an in-process stream under test.
     child: Option<Child>,
-    /// The host the stream searches on, for the errors that name it.
+    /// The host the stream runs on, for the errors that name it.
     host: String,
 }
 
@@ -244,7 +244,7 @@ impl Stream {
             .stderr(Stdio::piped())
             .spawn()
             .map_err(|e| {
-                Error::Transport(format!("cannot search {program:?} to follow {label}: {e}"))
+                Error::Transport(format!("cannot run {program:?} to follow {label}: {e}"))
             })?;
         // The pipes exist iff the spawn configured them; taking them cannot
         // fail past a successful spawn.
@@ -454,7 +454,7 @@ mod tests {
         bytes
     }
 
-    /// Polls `feed` until it yields records or the wait searches out.
+    /// Polls `feed` until it yields records or the wait runs out.
     fn polled(feed: &mut RemoteFeed) -> Result<Vec<Record>> {
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
@@ -628,7 +628,7 @@ mod tests {
     }
 
     #[test]
-    fn a_feed_opens_holding_the_run_s_history_however_late_it_arrives() -> Result<()> {
+    fn a_feed_opens_holding_the_search_s_history_however_late_it_arrives() -> Result<()> {
         // A poll cannot tell a search that has done nothing from a first frame
         // that has not arrived, so the open waits for the history frame. Were
         // it not to, a caller that ends on a drained feed — `sima follow` over

@@ -1,6 +1,6 @@
 //! Domains: the executable substance a format id binds.
 //!
-//! A domain groups everything the infrastructure needs to search one format's
+//! A domain groups everything the infrastructure needs to run one format's
 //! candidates: the executor that evaluates its specs, the environment its
 //! results depend on, the generator that produces its specs, the codecs that
 //! give specs and params their canonical bytes, and the translation of the
@@ -9,7 +9,7 @@
 //! surface; each domain's pieces live in its own module under `domains/`.
 //!
 //! Because this crate knows which execution backends the build compiles in and
-//! which one each format searches through, it also answers what devices a program
+//! which one each format runs through, it also answers what devices a program
 //! can use: the [`devices`] module carries the enumeration the layers above
 //! resolve device selectors against, asked about a format id.
 //!
@@ -20,7 +20,7 @@
 //! harness that advances it, and the stats reduction over the result. Each is
 //! written once over an internal boundary and instantiated per execution
 //! backend, so what a backend supplies is the translation onto its own toolkit
-//! and the kernels only it can search.
+//! and the kernels only it can run.
 //!
 //! A format binds a [`Domain`](sima_contracts::Domain) object and nothing
 //! else, which is the shape a program outside the workspace supplies, so a

@@ -35,7 +35,7 @@
 //! Each kernel carries a regeneration test asserting its committed artifact is
 //! exactly what its committed source compiles to. NVRTC stamps its own version
 //! into the PTX header, so that test also pins which NVRTC produced the commit:
-//! regenerating with a different one is a real change to what the device searches,
+//! regenerating with a different one is a real change to what the device runs,
 //! and it moves the digest the environment records.
 //!
 //! # What pairs with the WGSL toolkit
@@ -68,11 +68,11 @@
 //!
 //! # Tests
 //!
-//! Tests split three ways by what they touch: pure ones search anywhere, tests
+//! Tests split three ways by what they touch: pure ones run anywhere, tests
 //! that open a [`Context`] need an NVIDIA device, and tests that call
-//! [`compile`] need `libnvrtc`, which the build vendors, so they search anywhere
+//! [`compile`] need `libnvrtc`, which the build vendors, so they run anywhere
 //! too. Each device test sits behind a `mod on_device`, the marker that keeps
-//! it on the device machine. On that machine every test searches under a plain
+//! it on the device machine. On that machine every test runs under a plain
 //! `cargo test`, so a device or compiler fault surfaces as a test failure:
 //!
 //! ```text

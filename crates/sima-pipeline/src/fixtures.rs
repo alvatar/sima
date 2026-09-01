@@ -185,7 +185,7 @@ pub(crate) fn stub_environment() -> Environment {
 /// rather than hanging the search.
 struct ParkedTail {
     inner: StubExecutor,
-    /// Evaluations that search unparked — the commits the test wants.
+    /// Evaluations that run unparked — the commits the test wants.
     free: usize,
     /// Completed evaluations so far.
     completed: AtomicUsize,
@@ -221,7 +221,7 @@ impl Executor for ParkedTail {
 /// of real records without a worker binary or a device.
 ///
 /// `stop_after` interrupts the search once that many tasks have committed, which
-/// is how a test leaves a chain partway; `None` searches it to its end. The stop
+/// is how a test leaves a chain partway; `None` runs it to its end. The stop
 /// is deterministic, not a race: evaluations past the stop point park until
 /// the interrupt is raised, so the search can never finalize first, whatever the
 /// machine's load.

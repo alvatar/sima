@@ -136,7 +136,7 @@ mod tests {
     }
 
     #[test]
-    fn a_read_of_a_run_never_started_in_an_existing_store_is_refused() -> Result<()> {
+    fn a_read_of_a_search_never_started_in_an_existing_store_is_refused() -> Result<()> {
         // The store is there because another search used it; this search has no
         // journal in it, which a query reports rather than answering with an
         // empty history.

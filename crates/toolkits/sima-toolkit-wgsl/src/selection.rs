@@ -125,7 +125,7 @@ fn take_candidate(candidates: Vec<Candidate>, winner: usize) -> Result<DeviceCho
         .ok_or_else(|| Error::Backend("selected device index has no candidate".to_string()))
 }
 
-/// Selects the physical device to search on.
+/// Selects the physical device to run on.
 ///
 /// Keeps only devices exposing a compute queue family, then hands the shared
 /// policy the `(index, type)` ranking it decides over.

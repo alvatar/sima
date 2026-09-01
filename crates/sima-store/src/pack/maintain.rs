@@ -3,7 +3,7 @@
 //!
 //! Objects are born loose, because the write path — full content to `tmp/`,
 //! fsync, rename — is the store's crash-safety spine. Packing is what an
-//! operator searches to collapse those files into a few, and it never changes
+//! operator runs to collapse those files into a few, and it never changes
 //! what the store holds, only how it holds it.
 //!
 //! The operation is safe to interrupt at any point, because it never
@@ -124,7 +124,7 @@ impl Store {
     /// No object loses its last copy: a replacement pack is durable before
     /// the pack it replaces is deleted, and both the replacement's name and
     /// its bytes are a function of what it holds, so an interrupted
-    /// deletion re-searches onto the identical file.
+    /// deletion re-runs onto the identical file.
     ///
     /// The caller holds the maintenance lock, which is what serializes this
     /// against packing and against another deletion.
@@ -317,7 +317,7 @@ mod tests {
     }
 
     #[test]
-    fn a_death_between_pack_writes_converges_on_re_run() -> Result<()> {
+    fn a_death_between_pack_writes_converges_when_repeated() -> Result<()> {
         let (dir, store) = temp_store();
         let objects = put_objects(&store, 6);
         // The state a death inside the write phase leaves: one pack durable,
@@ -340,7 +340,7 @@ mod tests {
     }
 
     #[test]
-    fn a_death_mid_loose_delete_converges_on_re_run() -> Result<()> {
+    fn a_death_mid_loose_delete_converges_when_repeated() -> Result<()> {
         let (dir, store) = temp_store();
         let objects = put_objects(&store, 4);
         // The state a death inside the deletion phase leaves: the pack is

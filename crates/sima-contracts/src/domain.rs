@@ -1,7 +1,7 @@
 //! What a program supplies to bind a format id: [`Domain`].
 //!
 //! A domain is the declaration side of a format: its environment, the devices
-//! its work searches on, and the translation of the `[search.params]` section it owns.
+//! its work runs on, and the translation of the `[search.params]` section it owns.
 //! It also builds the [`Executor`] that does the work, because the executor is
 //! constructed in a worker process on a device chosen at search start.
 //!
@@ -17,7 +17,7 @@ use crate::{DeviceBinding, DeviceInfo, Executor};
 /// Everything a format id binds, as the program that owns the format supplies
 /// it.
 ///
-/// One object carries the format's executor, the devices it searches on, the
+/// One object carries the format's executor, the devices it runs on, the
 /// environment its results depend on, and the translation of its own
 /// configuration. Candidate production stays separate in [`crate::Generator`],
 /// because one format has one executor and many generators.
@@ -42,7 +42,7 @@ pub trait Domain: Send + Sync {
     /// device.
     fn device_desc(&self, device: Option<&DeviceBinding>) -> Result<(String, String)>;
 
-    /// Every device this format's work can search on, as its execution backend
+    /// Every device this format's work can run on, as its execution backend
     /// enumerates them. A format that opens no device answers with an empty
     /// list.
     fn enumerate_devices(&self) -> Result<Vec<DeviceInfo>>;

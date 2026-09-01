@@ -41,7 +41,7 @@ pub(crate) struct WorkerContext<'a> {
     pub(crate) search: SearchId,
     pub(crate) config: &'a SearchConfig,
     pub(crate) transport: &'a dyn WorkerTransport,
-    /// The host this slot's pool searches on; empty for a local pool. Journaled
+    /// The host this slot's pool runs on; empty for a local pool. Journaled
     /// with each `WorkerBound` as the parent's account of where the work ran.
     pub(crate) host: String,
     pub(crate) exec: &'a ExecutionConfig,
@@ -82,7 +82,7 @@ pub(crate) fn worker_loop(worker: WorkerId, ctx: WorkerContext<'_>) {
     {
         // The pull's placement decision reaches the store and the journal
         // before the assignment goes out, so a chain's binding is durable
-        // before any work searches under it.
+        // before any work runs under it.
         if let Err(e) = record_placement(&ctx, &leased.placement) {
             ctx.coordinator.fault(leased.pending.key, e);
             break;
@@ -406,7 +406,7 @@ fn process(
             Err(e) => {
                 // A checkpoint is disposable, so a load failure degrades to a
                 // fresh start — chosen over faulting the attempt: the resume
-                // is lost, the task still searches.
+                // is lost, the task still runs.
                 ctx.events.emit(Event::CheckpointDegraded {
                     task: task.clone(),
                     error: e.to_string(),
@@ -859,7 +859,7 @@ mod tests {
     }
 
     #[test]
-    fn a_disarmed_guard_leaves_the_run_running() {
+    fn a_disarmed_guard_leaves_the_search_running() {
         let coordinator = Coordinator::new();
         let key = a_key();
         coordinator.hold_lease(key);
@@ -875,7 +875,7 @@ mod tests {
 
     /// The outcome of running `process` once against a stub `Succeed` candidate
     /// whose identity references an input-state object.
-    struct ProcessRun {
+    struct ProcessExecution {
         _dir: tempfile::TempDir,
         store: Store,
         identity: TaskIdentity,
@@ -886,12 +886,12 @@ mod tests {
         expected_artifact: Vec<u8>,
     }
 
-    /// Builds a task whose identity references `state` and searches `process` once
+    /// Builds a task whose identity references `state` and runs `process` once
     /// over a loopback worker. The state object is stored only when
     /// `store_state` is set, so a caller can exercise both the resolved-state
     /// and missing-state paths. Every other identity component is stored, so a
     /// successful commit's only open question is the input state.
-    fn run_process(state: &[u8], store_state: bool) -> Result<ProcessRun> {
+    fn run_process(state: &[u8], store_state: bool) -> Result<ProcessExecution> {
         let dir = tempfile::tempdir().expect("temp dir");
         let store = Store::open(dir.path()).expect("open store");
 
@@ -995,7 +995,7 @@ mod tests {
             process(&ctx, WorkerId(0), pending, link.as_mut());
         }
         let events = rx.into_iter().collect();
-        Ok(ProcessRun {
+        Ok(ProcessExecution {
             _dir: dir,
             store,
             identity,
@@ -1289,7 +1289,7 @@ mod tests {
     }
 
     /// A one-task `accumulate:k` fixture: store, registered search, and the
-    /// segment-0 identity, ready for `process` searches with checkpoint knobs.
+    /// segment-0 identity, ready for `process` runs with checkpoint knobs.
     struct AccumulateFixture {
         _dir: tempfile::TempDir,
         store: Store,
@@ -1475,7 +1475,7 @@ mod tests {
             &folded_state(42, 3).to_bytes(),
         )?;
         let events = fixture.process(Some(0), Duration::ZERO)?;
-        assert_eq!(committed_steps(&events), 5, "the task searches fully");
+        assert_eq!(committed_steps(&events), 5, "the task runs fully");
         assert_eq!(fixture.state_artifact()?, folded_state(42, 5).to_bytes());
         Ok(())
     }
@@ -1534,7 +1534,7 @@ mod tests {
     #[test]
     fn the_step_axis_alone_saves_every_nth_offer() -> Result<()> {
         // Wall-clock disabled, step cadence 2, over 5 offers (one per step). The
-        // accumulate offer searches after each step, so saves land at offers 2 and 4;
+        // accumulate offer runs after each step, so saves land at offers 2 and 4;
         // offer 5 does not reach the third multiple. The slot holds step 4, not
         // the final step 5 — proving the step axis alone drives checkpointing.
         let fixture = AccumulateFixture::new(5)?;

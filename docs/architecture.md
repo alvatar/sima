@@ -9,10 +9,18 @@ the motivation and design; `TODO.md` the roadmap; `AGENTS.md` the project
 rules. This document describes the implemented system, and the rules that
 govern it are stated first.
 
-sima runs in three execution modes:
+Execution has two contracts:
+
+- **search execution** — integrated work with content-addressed task identity,
+  catalog artifacts, a journal, and resumable snapshots and checkpoints.
+- **exec execution** — one opaque command on a machine, with files fetched home
+  as its result and no search identity, journal, or resume protocol.
+
+Placement is orthogonal to the contract. Search execution supports three
+placements:
 
 - **local** — one machine runs the search end to end.
-- **migrate** — the run moves onto a more powerful machine, computes there,
+- **migrate** — the search moves onto a more powerful machine, computes there,
   and its results come home.
 - **fleet** — many machines lend workers to one search driven from the
   operator's machine.
@@ -32,14 +40,14 @@ ones are added the same way.
 ### Settled invariants
 
 - Execution backends are implementation crates under `crates/toolkits/` (`sima-toolkit-*`), depending on `sima-core` (and `sima-contracts` when needed); `sima-domains` depends on the toolkits its domains use, and each toolkit isolates its own dependency set.
-- The store is the only durable state. Queues, schedulers, and orchestrators are ephemeral; a task source derives the currently-runnable frontier from (config, store state) — static batches and segment chains are two implementations of that one interface. Resume, crash-recovery, and re-run are one code path: re-derive the frontier, continue.
-- One orchestrator per run — the `sima run` process itself, no daemon; single-writer enforced by an OS file lock the kernel releases when the holder exits, so no staleness protocol exists; the lock file's content (pid, hostname) is diagnostic only. Workers are stateless leaseholders.
+- The store is the only durable state. Queues, schedulers, and orchestrators are ephemeral; a task source derives the currently-runnable frontier from (config, store state) — static batches and segment chains are two implementations of that one interface. Resume, crash-recovery, and running again are one code path: re-derive the frontier, continue.
+- One orchestrator per search — the `sima search` process itself, no daemon; single-writer enforced by an OS file lock the kernel releases when the holder exits, so no staleness protocol exists; the lock file's content (pid, hostname) is diagnostic only. Workers are stateless leaseholders.
 - Executors are pure compute: they receive (spec, params, seed, env) and return artifacts + stats, never touching the store. Workers commit results through the catalog. The trust boundary lives here. A config-routed program is spawned across that boundary with an explicit environment — a baseline allowlist plus the variable names its entry declares — in a fresh scratch working directory removed at reap, and every protocol answer it owes is bounded by `answer_timeout_ms` except generation, which is compute. Such a program's identity is what it declares through its environment components and nothing else; the digest of the file that served each session is journal provenance, and a resume whose program digest changed stops until the invocation accepts it.
-- Candidates are opaque at the infrastructure layer: a spec is (format id, opaque bytes), content-addressed. Domains interpret specs; "genome" is domain vocabulary. Run parameters are a second opaque content-addressed blob (params): generators produce specs, config produces params, and the spec's format id governs the interpretation of both — so one candidate stays addressable across evaluation stages and the generator contract never carries evaluation policy.
+- Candidates are opaque at the infrastructure layer: a spec is (format id, opaque bytes), content-addressed. Domains interpret specs; "genome" is domain vocabulary. Search parameters are a second opaque content-addressed blob (params): generators produce specs, config produces params, and the spec's format id governs the interpretation of both — so one candidate stays addressable across evaluation stages and the generator contract never carries evaluation policy.
 - Two serialization worlds: identity-bearing bytes (anything hashed) go through the canonical `Enc`/`Dec` encoding exclusively; human-readable artifacts are serde and never identity-bearing.
-- Reproducibility is declared per domain across two tiers (README, Determinism), not assumed uniform. The infrastructure guarantees run identity regardless: manifests are canonicalized so run hashes are independent of worker completion order, and journals are observational, excluded from equality criteria.
-- Structured events are the `sima-trace` facade at L0.5, directly above `sima-core`: the typed event vocabulary, journal records, emitters, and one collector thread any layer emits into without an upward edge. The collector is the single-writer boundary — it stamps each event, appends the journal line through a `DurableSink` the store implements (which keeps the facade below the store), then hands the record to the run's observer; the journal write precedes the observer, and a child's events cross the wire as opaque frames the parent forwards to the collector.
-- A poisoned in-process `Mutex` is recovered, never propagated: every `lock` here reads `unwrap_or_else(PoisonError::into_inner)`. Poisoning means some thread panicked holding the lock, and the panic itself is already reported through the path that caught it — the run thread's `catch_unwind`, the worker's, the collector's join. Escalating a second panic out of an unrelated reader adds no information and takes down a run that is otherwise winding down cleanly. Where a panic could leave state half-written, the guarded value is shaped so a torn state is not reachable: a slot holds a whole value or none.
+- Reproducibility is declared per domain across two tiers (README, Determinism), not assumed uniform. The infrastructure guarantees search identity regardless: manifests are canonicalized so search hashes are independent of worker completion order, and journals are observational, excluded from equality criteria.
+- Structured events are the `sima-trace` facade at L0.5, directly above `sima-core`: the typed event vocabulary, journal records, emitters, and one collector thread any layer emits into without an upward edge. The collector is the single-writer boundary — it stamps each event, appends the journal line through a `DurableSink` the store implements (which keeps the facade below the store), then hands the record to the search's observer; the journal write precedes the observer, and a child's events cross the wire as opaque frames the parent forwards to the collector.
+- A poisoned in-process `Mutex` is recovered, never propagated: every `lock` here reads `unwrap_or_else(PoisonError::into_inner)`. Poisoning means some thread panicked holding the lock, and the panic itself is already reported through the path that caught it — the search thread's `catch_unwind`, the worker's, the collector's join. Escalating a second panic out of an unrelated reader adds no information and takes down a search that is otherwise winding down cleanly. Where a panic could leave state half-written, the guarded value is shaped so a torn state is not reachable: a slot holds a whole value or none.
 
 ### Principles
 
@@ -57,14 +65,14 @@ Strictly downward dependencies, enforced by workspace crate edges.
 |-------|------------------|-----------------------------------------------------------------------|
 | L0    | `sima-core`      | error type, canonical encoding, content hash, PRNG, child spawn disposition |
 | L0.5  | `sima-trace`     | structured events: the typed vocabulary, journal records, emitters, the collector |
-| L1    | `sima-model`     | identity vocabulary: spec, params, environment, task key, record, run config |
-| L2    | `sima-store`     | durable state: CAS, task index, run manifests, journals               |
+| L1    | `sima-model`     | identity vocabulary: spec, params, environment, task key, record, search config |
+| L2    | `sima-store`     | durable state: CAS, task index, search manifests, journals            |
 | L3    | `sima-contracts` | generator/executor contracts over opaque specs and params            |
 | L4    | `sima-transport` | worker transport: wire protocol, executor host loop, subprocess and loopback links |
 | L5    | `sima-domains`   | per-format executors, generators, codecs, environments, id dispatch, and config translation; the reference stub domain |
-| L6    | `sima-scheduler` | task sources, worker pool, leases, retry, device placement, run driver |
-| L7    | `sima-pipeline`  | config loading, orchestration, run and per-task queries               |
-| L8    | `sima`           | CLI: run, status, report, rm, reconcile, tui, follow                  |
+| L6    | `sima-scheduler` | task sources, worker pool, leases, retry, device placement, search driver |
+| L7    | `sima-pipeline`  | config loading, orchestration, search and per-task queries            |
+| L8    | `sima`           | CLI: search, status, report, rm, reconcile, tui, follow               |
 
 Beside the spine, `sima-worker` is the worker binary: it depends on
 `sima-transport` (the executor host loop) and `sima-domains` (the executor
@@ -73,7 +81,7 @@ spawns one `sima-worker` process per worker slot.
 
 The store is the only durable state. Queues, schedulers, and orchestrators
 are ephemeral: the runnable frontier is derived from (config, store state),
-so resume, crash-recovery, and re-run are one code path.
+so resume, crash-recovery, and running again are one code path.
 
 `sima-provider` also sits beside the spine, above the store: it is the
 rented-hardware control plane, depending on `sima-core`, `sima-model`, and
@@ -102,19 +110,19 @@ computes on, below `sima-domains` and beside `sima-contracts`: it depends on
 isolates its own dependency set. `sima-domains` depends on the toolkits its
 executors use. See [Execution toolkits](#execution-toolkits).
 
-## Anatomy of a run
+## Anatomy of a search
 
-The component hierarchy of one running `sima run` process, with the store it
+The component hierarchy of one running `sima search` process, with the store it
 drives. Later sections describe each component in detail.
 
 ```
-sima run  (one orchestrator process per run; OS file lock on the store)
+sima search  (one orchestrator process per search; OS file lock on the store)
 │
 ├─ Store ················ the only durable state
 │    objects/                 content-addressed bytes (specs, params,
 │                             states, artifacts)
 │    tasks/<key>              committed task records
-│    runs/<run-id>/
+│    searches/<search-id>/
 │      manifest.json          written once, at finalize
 │      journal                append-only lifecycle events
 │      checkpoint/<chain>     mutable resume scratch, one slot per chain
@@ -168,13 +176,13 @@ sima run  (one orchestrator process per run; OS file lock on the store)
 A chain exists durably only as the trail of committed records linked by
 `input_state` hashes in the store; `Chain` is the cursor `SegmentChain`
 rebuilds from that trail at construction, which is why crash recovery,
-interrupt resume, and re-run are one code path.
+interrupt resume, and running again are one code path.
 
 The diagram holds two continuation mechanisms that carry the same bytes
-under different guarantees. Checkpoint = crash recovery within a run: a
+under different guarantees. Checkpoint = crash recovery within a search: a
 disposable scratch slot, outside every hash, that only shortens a restarted
-attempt. Segment state = a result another run can legitimately start from: a
-committed, addressable artifact, which is what lets a longer run reuse the
+attempt. Segment state = a result another search can legitimately start from: a
+committed, addressable artifact, which is what lets a longer search reuse the
 shared prefix of a shorter one.
 
 ## Two serialization worlds
@@ -184,7 +192,7 @@ shared prefix of a shorter one.
   self-delimiting: a value has exactly one byte image, and that image parses
   without external length hints. A value's id is the blake3 hash of its
   standalone canonical bytes, so the id doubles as its address in the CAS.
-- **Human-readable data** uses serde: JSON for the run manifest, plain-text
+- **Human-readable data** uses serde: JSON for the search manifest, plain-text
   lines for the journal. It carries observational or index data and is never
   identity-bearing.
 
@@ -206,19 +214,19 @@ The foundation every crate shares:
 ## `sima-trace` (L0.5)
 
 The structured-event facade: one typed vocabulary any layer can emit,
-funneled through one collector into the run's journal and out to the
-run's live observer. The crate sits directly above `sima-core`, so scheduler,
+funneled through one collector into the search's journal and out to the
+search's live observer. The crate sits directly above `sima-core`, so scheduler,
 transport, and worker host all emit without an upward edge. Events are
-observational — they record what happened, never run identity — so their
+observational — they record what happened, never search identity — so their
 serialization world is serde, and the stream is excluded from every
 equality criterion.
 
-- **`Event`** — the vocabulary: the run-lifecycle variants (see
+- **`Event`** — the vocabulary: the search-lifecycle variants (see
   [Journal events](#journal-events)) plus `Diagnostic`, a correlated line
   of observational text: a level (`info`/`warn`/`error`), a source (for
   example `worker stderr`, `panic`, `transport`), the message, and optional
   `worker`/`host`/`task` context keys — optional because a diagnostic may
-  precede any lease or follow the run's end.
+  precede any lease or follow the search's end.
 - **`Record`** — the journal line type: a `ts_ms` wall-clock stamp plus
   the event, flattened, so the line is flat — the event's own keys sit
   beside `ts_ms` at the top level. The stamp is required: a line lacking
@@ -227,17 +235,17 @@ equality criterion.
   and a closed channel drops the event silently. Components that emit
   receive an emitter explicitly at construction — there is no process
   global and no thread-local propagation. Causality context is the natural
-  keys: events carry `run`, `task`, `attempt`, `worker`, and `host`
+  keys: events carry `search`, `task`, `attempt`, `worker`, and `host`
   directly as fields.
 - **`Collector`** — one scoped thread drains the channel; it takes one
   blocking event and everything already queued behind it, stamps each
   `ts_ms` (a single clock, read at append time — remote events are
   stamped on arrival), appends the batch's lines through a
-  **`DurableSink`**, then hands the records to the run's observer in
+  **`DurableSink`**, then hands the records to the search's observer in
   order. The ordering guarantee: the journal write for an event happens
   before the observer sees it, and the observer sees records in journal
   order, from one calling thread. The batch is what keeps a durability
-  barrier from being paid per event — a run committing tasks faster than
+  barrier from being paid per event — a search committing tasks faster than
   that would otherwise be capped at the sink's own rate however many
   workers it has. A crash mid-batch loses the events the sink had not
   made durable, which the observational journal already permits: it is
@@ -262,7 +270,7 @@ length-prefixed string domain tag, fixed forever (a layout change mints a
 | `sima.environment.v1` | `Environment`  | `EnvironmentId` |
 | `sima.task.v1`        | `TaskIdentity` | `TaskKey`     |
 | `sima.task-record.v1` | `TaskRecord`   | —             |
-| `sima.run-config.v1`  | `RunConfig`    | `RunId`       |
+| `sima.run-config.v1`  | `SearchConfig`    | `SearchId`       |
 
 - A spec is (format id, opaque bytes): the candidate. Params is a second
   opaque blob: the evaluation settings. The spec's format id governs the
@@ -272,12 +280,12 @@ length-prefixed string domain tag, fixed forever (a layout change mints a
   input state get distinct keys).
 - `Environment` components are content-derived only (versioned constants,
   content digests). Machine-derived facts (hostname, device, time) are
-  journal material, or run portability fails by construction.
-- Identity and execution split: `RunConfig` holds the identity-bearing
-  config only — `RunId = blake3(config bytes)` survives changes in worker
+  journal material, or search portability fails by construction.
+- Identity and execution split: `SearchConfig` holds the identity-bearing
+  config only — `SearchId = blake3(config bytes)` survives changes in worker
   count, store path, or hardware. The optional segment count is part of it:
-  work division is structural, so runs of different segmentation are
-  different runs. `TaskRecord` holds identity plus artifact
+  work division is structural, so searches of different segmentation are
+  different searches. `TaskRecord` holds identity plus artifact
   references only — attempts, timings, and workers live in the journal.
 - Names (format ids, generator ids, component and artifact names): 1..=64
   bytes of `[a-z0-9._-]`.
@@ -296,12 +304,12 @@ One `Store` type over a root directory:
 <root>/instances/<tag>           one rented instance's ledger record
 <root>/spend/<owner>/<tag>-<started-ms>  one closed rental's cost
 <root>/machines/<provider>-<machine>/<tag>-<occurred-ms>  one incident
-<root>/runs/<run-id>/manifest.json
-<root>/runs/<run-id>/journal
-<root>/runs/<run-id>/orchestrator.lock
-<root>/runs/<run-id>/checkpoint/<slot>   mutable resume scratch
-<root>/runs/<run-id>/placement/<chain>  the chain's device class
-<root>/runs/<run-id>/remove-intent      a removal's resumable plan
+<root>/searches/<search-id>/manifest.json
+<root>/searches/<search-id>/journal
+<root>/searches/<search-id>/orchestrator.lock
+<root>/searches/<search-id>/checkpoint/<slot>   mutable resume scratch
+<root>/searches/<search-id>/placement/<chain>  the chain's device class
+<root>/searches/<search-id>/remove-intent      a removal's resumable plan
 ```
 
 ### Components
@@ -327,33 +335,33 @@ One `Store` type over a root directory:
   index's per-task cell.
 - **record** — a `TaskRecord` object: the identity of one evaluation plus
   the addresses of its artifacts. One record answers one task.
-- **run** — one search invocation, identified by `RunId`, the hash of its
+- **search** — one search invocation, identified by `SearchId`, the hash of its
   config's canonical bytes, which is also the address of the config object.
-- **manifest** — a finalized run's `(task, record)` list sorted by task key:
-  the fixed set of tasks the run comprises.
-- **journal** — a run's append-only observational history, one event per
+- **manifest** — a finalized search's `(task, record)` list sorted by task key:
+  the fixed set of tasks the search comprises.
+- **journal** — a search's append-only observational history, one event per
   line.
-- **checkpoint slot** — a run's mutable per-chain scratch file holding the
+- **checkpoint slot** — a search's mutable per-chain scratch file holding the
   latest continuation state a running segment offered. Written atomically,
   latest-only, never hashed and never part of a manifest or closure; a slot
   that is missing, torn, or keyed to another task loads as nothing.
-- **closure** — the deduplicated, sorted set of objects a finalized run
+- **closure** — the deduplicated, sorted set of objects a finalized search
   depends on: config, records, and every object those records reference. The
-  unit of run portability and store sync.
+  unit of search portability and store sync.
 - **spend entry** — what one rental cost, from its ledger record's stamp to
   its confirmed destruction. It is written when the rental is closed out and
-  outlives the record, so a run's total spend survives every machine it
+  outlives the record, so a search's total spend survives every machine it
   rented.
-- **removal** — deleting a run and every object no surviving run's closure
-  references, guarded so an object a live run needs is never removed. The plan
-  is recorded in the run's `remove-intent` slot before any deletion, so a
+- **removal** — deleting a search and every object no surviving search's closure
+  references, guarded so an object a live search needs is never removed. The plan
+  is recorded in the search's `remove-intent` slot before any deletion, so a
   removal interrupted by a crash resumes to the same end state.
 - **packing** — the maintenance operation that consolidates loose objects
   into packs and deletes the files they absorbed, so the store's inode count
   follows its pack count rather than its object count.
-- **sweep** — deleting everything outside the union of the finalized runs'
+- **sweep** — deleting everything outside the union of the finalized searches'
   closures: orphan objects in either representation, the index entries
-  naming them, every unfinalized run directory, and the leftovers in `tmp/`.
+  naming them, every unfinalized search directory, and the leftovers in `tmp/`.
   It is guarded the same way removal is, and it is what `sima pack --gc`
   runs.
 
@@ -393,39 +401,39 @@ from `packs/` whenever a lookup misses. Packs are immutable, so the only
 directory mutations are a whole file appearing and a whole file
 disappearing: a rescan lists a handful of names and loads indices only for
 packs it has not seen. A reader whose cached entry names a pack that has
-since been rewritten meets the vanished file, forgets it, and searches once
+since been rewritten meets the vanished file, forgets it, and runs once
 more.
 
 ### Retention
 
-**What is kept.** A finalized run's closure, whole: its config object, every
+**What is kept.** A finalized search's closure, whole: its config object, every
 record, and every object those records reference. Which candidates contribute a
 state snapshot at all is settled earlier, at commit time, by the snapshot
-predicate of `sima-domains`; retention holds what the run committed.
+predicate of `sima-domains`; retention holds what the search committed.
 
 **For how long.** Until the operator asks for a deletion. The two operations are
-the *removal* and the *sweep* above: `sima rm` deletes one run and everything no
+the *removal* and the *sweep* above: `sima rm` deletes one search and everything no
 surviving closure references, `sima pack --gc` deletes everything outside the
-union of the finalized runs' closures. Which run `rm` deletes is the config's
-by default — the run its identity section hashes to — and `--run <id-prefix>`
-names one of that store's runs directly, for the ones a config no longer names:
-a store accumulates the runs of every identity ever driven against it, and an
-edited seed leaves the previous run reachable by nothing else. Any unambiguous
-prefix addresses a run, as one does a task; an ambiguous one is refused naming
-every run it matched, and the empty prefix — which begins every run — is
-refused before the store is searched. `sima runs <store-dir>` is what lists
-them — one line per run, with its id, the state its journal projects, and its
+union of the finalized searches' closures. Which search `rm` deletes is the config's
+by default — the search its identity section hashes to — and `--search <id-prefix>`
+names one of that store's searches directly, for the ones a config no longer names:
+a store accumulates the searches of every identity ever driven against it, and an
+edited seed leaves the previous search reachable by nothing else. Any unambiguous
+prefix addresses a search, as one does a task; an ambiguous one is refused naming
+every search it matched, and the empty prefix — which begins every search — is
+refused before the store is searched. `sima searches <store-dir>` is what lists
+them — one line per search, with its id, the state its journal projects, and its
 task ledger — and is the one read command that takes a store directory rather
 than a config, because what a store holds is precisely the question a config
-cannot ask. A run is registered before any machine is asked for, so a fleet that
-never came up leaves a run in that listing: nothing committed, and a journal
-holding what it said about the acquisition that failed. Both are run-grained and
-reference-guarded, so the smallest thing either erases is a whole run's private
+cannot ask. A search is registered before any machine is asked for, so a fleet that
+never came up leaves a search in that listing: nothing committed, and a journal
+holding what it said about the acquisition that failed. Both are search-grained and
+reference-guarded, so the smallest thing either erases is a whole search's private
 objects. Expiry is the operator's act alone, as consolidation is: the store
 reads no clock.
 
 **The floor.** Re-evaluation reads the record spine — the config, the task
-index, the records, the journal — and finds its answer there. A finalized run
+index, the records, the journal — and finds its answer there. A finalized search
 whose snapshot objects are gone therefore re-finalizes to the same manifest: the
 frontier re-derives from index entries, and finalization reads records. The
 snapshots serve consumers outside the spine, external renderers and selection
@@ -459,7 +467,7 @@ its path is the hash of its bytes, so racing writers carry identical content
 by construction, and an unconditional rename is both correct and cheap —
 which writer's copy lands is unobservable, and different bytes never reach
 that path. An index entry or a manifest can be handed conflicting content —
-two different results claiming one task key, two manifests for one run — so
+two different results claiming one task key, two manifests for one search — so
 there the write compares against what already exists: an identical re-write
 is idempotent (the path taken on retry and resume), and a differing one is
 reported as `Corruption` instead of silently overwriting.
@@ -490,18 +498,18 @@ key, ever.
 
 ### Manifest and finalization
 
-Finalizing a run writes its manifest once, atomically: the `(task, record)`
+Finalizing a search writes its manifest once, atomically: the `(task, record)`
 list in serde JSON with entries sorted by task key, so the bytes are
 independent of worker completion order. It is the object every
-equality-based acceptance criterion compares. The `run` field is verified
-against the directory name on read, and — because `RunId` is the hash of the
-config's canonical bytes — it is simultaneously the address of the run's
-config object, stored when the run is registered. A store therefore contains
-the definition of every run it holds.
+equality-based acceptance criterion compares. The `search` field is verified
+against the directory name on read, and — because `SearchId` is the hash of the
+config's canonical bytes — it is simultaneously the address of the search's
+config object, stored when the search is registered. A store therefore contains
+the definition of every search it holds.
 
 ### Journal
 
-A run's observational history: append-only, one event per line, its meaning
+A search's observational history: append-only, one event per line, its meaning
 owned by the emitting layers above the trace facade. The store owns the
 framing only: a payload is one nonempty line free of embedded line breaks;
 appends are single-write, newline-terminated, fsynced. A batch of lines is
@@ -510,7 +518,7 @@ is written, so the framing rules are per line however many travel together.
 On read, a torn
 final line (bytes past the last newline) is ignored; invalid UTF-8 inside
 the intact region is corruption. Journals legitimately differ between
-identical runs and are excluded from every equality criterion.
+identical searches and are excluded from every equality criterion.
 
 Each line is a `sima-trace` `Record`: the collector's `ts_ms` wall-clock
 stamp plus one event — a lifecycle event or a `diagnostic` line. The
@@ -522,9 +530,9 @@ journal writer, which is how records reach this framing.
 
 Store methods take `&self` and are safe under concurrent writers: identical
 content converges through rename and link atomicity, and a conflicting racer
-on an index entry or manifest fails loudly instead of overwriting. A run's
-journal has a single writer, the orchestrator; one orchestrator per run is
-enforced by `Store::acquire_run_lock`, the OS file lock on the run's
+on an index entry or manifest fails loudly instead of overwriting. A search's
+journal has a single writer, the orchestrator; one orchestrator per search is
+enforced by `Store::acquire_search_lock`, the OS file lock on the search's
 `orchestrator.lock` file. The kernel releases that lock the instant its
 holder exits, however it exits, so no staleness protocol exists. The file's
 content (pid, hostname) is diagnostic only — it names the holder in the
@@ -539,7 +547,7 @@ maintenance runs beneath them.
 
 ## `sima-provider`
 
-The boundary between a run and the machines it rents. A provider lists a
+The boundary between a search and the machines it rents. A provider lists a
 marketplace, rents one machine, reports its state, and destroys it; the
 crate turns that into an owned instance with guaranteed teardown.
 
@@ -581,10 +589,10 @@ Selection is two separate steps, and keeping them separate is the design:
 
 ### The acquisition loop
 
-`acquire` takes the acquiring run's orchestrator lock by reference, and the
+`acquire` takes the acquiring search's orchestrator lock by reference, and the
 ledger record's owner is stamped from it. The lock is the capability: a
-reference to it proves the run holds it, which is what reconciliation reads
-as the owner still running, here and for every other live run.
+reference to it proves the search holds it, which is what reconciliation reads
+as the owner still running, here and for every other live search.
 
 It then reconciles, admits, lists, ranks, and walks the ranked offers:
 
@@ -638,7 +646,7 @@ find it late at its first status call, which is how one stalled machine can cost
 a walk dozens of pointless rentals. Only the walk's **first** candidate is
 charged a `NeverReady` incident for spending the budget — it is the one that had
 all of it — while a candidate that inherits the leftover was never given its own
-time and answers for nothing. Two incidents blacklist a machine across runs, so
+time and answers for nothing. Two incidents blacklist a machine across searches, so
 charging inherited waits would wipe the cheap end of the market from the
 candidate pool.
 
@@ -694,10 +702,10 @@ once what it cost is durable.
 money before a new machine is paid for, and `sima reconcile <config>` is the
 same pass invoked on its own — the answer after a crash, when nothing starts
 an acquisition. It considers only records naming the given provider.
-Owner liveness is the run's orchestrator lock: the kernel releases it the
+Owner liveness is the search's orchestrator lock: the kernel releases it the
 moment its holder exits, so a free lock means the owning process is gone.
 
-| Record state | Provider says           | Owner run lock | Action                               |
+| Record state | Provider says           | Owner search lock | Action                               |
 |--------------|-------------------------|----------------|--------------------------------------|
 | live         | instance exists         | held           | keep: a running orchestrator owns it  |
 | live         | instance exists         | free           | destroy instance, close the rental out |
@@ -723,10 +731,10 @@ machine it found is charged that rate: it is what the marketplace bills, so
 the entry follows the bill in both directions. The record's own rate stands
 where the scan found no machine, and where the listing states no rate.
 
-A record is judged by its owner's lock alone, so a run holding its lock
+A record is judged by its owner's lock alone, so a search holding its lock
 keeps every record naming it — including one an earlier process of that same
-run left behind. Such a leftover is indistinguishable from a machine the
-live process is using, and it is reaped like any orphan once the run's lock
+search left behind. Such a leftover is indistinguishable from a machine the
+live process is using, and it is reaped like any orphan once the search's lock
 is free.
 
 One pass is one ledger scan plus one provider instance listing. A ledger
@@ -735,12 +743,12 @@ holding no rentals never depends on a provider being reachable.
 
 ### The budget guard
 
-A run's rentals are bounded by a `Budget`: a ceiling on total spend, and a
+A search's rentals are bounded by a `Budget`: a ceiling on total spend, and a
 ceiling on the wall-clock the rental phase may span. Both are optional, and
-an absent one is unlimited. The spend cap is cumulative over the whole run,
+an absent one is unlimited. The spend cap is cumulative over the whole search,
 across every rental and every provider — one pool of money — which is a
 different question from the per-offer `$/hr` cap among the selection
-constraints. The wall-clock ceiling is anchored at the run's first rental,
+constraints. The wall-clock ceiling is anchored at the search's first rental,
 derived from durable state, so it survives a crash and a resume.
 
 **The charged window** of one rental opens at its ledger record's stamp,
@@ -783,7 +791,7 @@ Two crash windows follow from that ordering, and neither loses a charge:
   machine is gone; the next pass writes the entry then.
 
 **Accrual** is one fold over durable state: the sum of closed entries' costs,
-plus every record of the run charged from its stamp to now. A record whose
+plus every record of the search charged from its stamp to now. A record whose
 tag and stamp already have an entry is that entry's own, pending removal,
 and is left out — which is what keeps the two windows above from
 double-counting. `spend_report` is that fold, and `assess` reads its verdict
@@ -856,9 +864,9 @@ Three decisions shape it:
   normalized and handed up. Constraints and ranking stay in
   [Selection](#selection), so what disqualifies an offer is one code path
   across every backend.
-- **The API key is read from the environment.** Run configuration is
+- **The API key is read from the environment.** Search configuration is
   content-addressed and identity-bearing, so a key placed there would enter
-  run hashes and the store. The backend reads `VAST_API_KEY` at
+  search hashes and the store. The backend reads `VAST_API_KEY` at
   construction and sends it as a bearer token.
 - **An instance carrying no label is omitted from the listing.** A ledger
   record exists only for a tag this backend wrote, so an unlabeled instance
@@ -870,7 +878,7 @@ Three decisions shape it:
 ## `sima-contracts` (L3)
 
 The two boundaries the search substrate runs candidates through. A `Generator`
-produces a run's candidate specs from `(root_seed, params, format)`,
+produces a search's candidate specs from `(root_seed, params, format)`,
 deterministically. An `Executor`
 interprets one format: it receives one candidate and returns what that
 evaluation produced. Both are pure compute over `sima-model` values; the crate
@@ -946,7 +954,7 @@ under semver.
 
 What stays internal, each because it belongs to the other side of the boundary:
 
-- **run-level configuration** (`RunConfig`, `RunId`, `GeneratorConfig`) is the
+- **search-level configuration** (`SearchConfig`, `SearchId`, `GeneratorConfig`) is the
   orchestrator's;
 - **identity and commitment** (`TaskKey`, `TaskIdentity`, `TaskRecord`,
   `ArtifactRef`) are the worker's: an executor receives loaded bytes and
@@ -970,7 +978,7 @@ on, so a backend the workspace has never seen names its devices in the
 published vocabulary — see [Device placement](#device-placement) for what a
 class asserts.
 
-The configuration boundary is open too: a format's `[run.params]` section
+The configuration boundary is open too: a format's `[search.params]` section
 reaches its domain as **TOML text**, so a program translates its own
 configuration with a TOML of its own and sima's version never enters the
 surface — see [Registering a domain](#registering-a-domain).
@@ -998,7 +1006,7 @@ flowchart TD
 
 **A registered format reaches other machines by carrying its program.** Both
 ways of using another machine rest on the same delivery: `sima migrate` moves a
-whole run onto one, and `sima run --fleet` spreads one run's tasks across
+whole search onto one, and `sima search --fleet` spreads one search's tasks across
 several — see [Carrying a registered program](#carrying-a-registered-program)
 for what travels and [Delivering a program to a
 machine](#delivering-a-program-to-a-machine) for how it lands.
@@ -1015,26 +1023,26 @@ What a program hands over is a pair of objects in `sima-contracts`, published
 by `sima-api`:
 
 - **`Domain`** — everything one format id binds: the devices its work runs on,
-  the environment its results depend on, the translation of its `[run.params]`
+  the environment its results depend on, the translation of its `[search.params]`
   section, and the `Executor` it builds. A constructor rather than a built
   executor, because the device is known only in the worker process.
 - **`Generator`** — one way of choosing candidates for that format, with the
-  translation of its own `[run.generator]` keys. Separate, because one format
+  translation of its own `[search.generator]` keys. Separate, because one format
   has one executor and many generators.
 
 Traits rather than structs of function pointers, because a component holds
 state: a renderer keeps its device and its loaded assets for the life of the
-run.
+search.
 Configuration crosses as TOML text, so the `toml` crate stays off the published
 surface.
 
 A whole program is then: implement the two traits, call `sima_api::serve`. That
-call reads the role from the process arguments, so one binary is both what a run
+call reads the role from the process arguments, so one binary is both what a search
 asks about the format and what its workers execute in.
 
 ### The domain service
 
-Five of the seven things a format binds are read where a run is driven — its
+Five of the seven things a format binds are read where a search is driven — its
 environment, its device list, its params translation, its generator's params
 translation, and its specs — so a program in its own binary answers them over a
 second conversation, `<binary> --serve-domain <format>`. The other two, the
@@ -1051,12 +1059,12 @@ so the startup cost is paid once.
 
 ### The registry
 
-The run driver reads a domain the same way whichever side answers.
+The search driver reads a domain the same way whichever side answers.
 
 ```mermaid
 flowchart LR
   subgraph parent["orchestrator process"]
-    RUN["run driver"] --> REG["DomainRegistry"]
+    RUN["search driver"] --> REG["DomainRegistry"]
     REG --> SRC{"source for<br/>this format"}
     SRC -->|in-tree| BI["BuiltinSource<br/>direct calls"]
     SRC -->|configured| BN["BinarySource<br/>spawn + protocol"]
@@ -1085,15 +1093,15 @@ env    = ["ACME_ASSETS"]   # optional; variable names the program also receives
 sdk    = "python"          # optional; the SDK the program is written against
 ```
 
-The registry is built where the config resolves, and the run's own translations
+The registry is built where the config resolves, and the search's own translations
 go through it, so a program that cannot answer for the format it is declared
 under fails at load — the rule a config naming an unknown format already
 follows, and no store is left behind either way.
 
 **Protocol sufficiency is tested.** `sima-worker --serve-domain` serves the
 in-tree formats through the two contracts, and an integration suite drives one of them
-through `BinarySource` and asserts the run id and every task key are identical
-to the same run by direct call. A field the protocol failed to carry would
+through `BinarySource` and asserts the search id and every task key are identical
+to the same search by direct call. A field the protocol failed to carry would
 change a hash.
 
 ### Isolation and trust at the program boundary
@@ -1113,11 +1121,11 @@ decode:
 - format and generator ids, revalidated on each decode that carries one;
 - device class ids, against the class character and length rule;
 - environment component names, against the shared name rule;
-- the spec format, checked against the run before a candidate is stored;
+- the spec format, checked against the search before a candidate is stored;
 - the artifact name, checked before a result becomes a record.
 
 **What a spawned program receives.** A worker gets three piped stdio streams,
-its stderr captured line by line into the run's journal; a domain service gets
+its stderr captured line by line into the search's journal; a domain service gets
 piped stdin and stdout, its stderr the orchestrator's own. Beyond those:
 
 - the argument vector — `--serve-domain <format>` for the service role, empty
@@ -1142,7 +1150,7 @@ and the clients need the ambient environment to reach anything.
 
 **What sima protects.**
 
-- **Run identity and store integrity** against a buggy program: the validations
+- **Search identity and store integrity** against a buggy program: the validations
   above, content addressing, and the single-writer catalog the parent alone
   holds. A worker returns outcomes over the pipe; the parent commits.
 - **The orchestrator's credentials**: a provider key in the orchestrator's
@@ -1166,7 +1174,7 @@ each optional and each disabled when absent:
 |---|---|---|
 | task attempt, which is compute | the worker is killed, the attempt fails transiently and retries | `attempt_timeout_ms` |
 | worker handshake, spawn to `Ready` | a spawn failure naming the binary and the deadline | `answer_timeout_ms` |
-| domain-service metadata question | a config-load or run error naming the binary and the question | `answer_timeout_ms` |
+| domain-service metadata question | a config-load or search error naming the binary and the question | `answer_timeout_ms` |
 | domain-service `Generate` | unbounded by design | — |
 
 The handshake bound covers every worker spawn — builtin, configured,
@@ -1177,7 +1185,7 @@ initialization.
 Generation is exempt because it is computation proportional to the batch, the
 analog of a task attempt rather than an answer, and a default sized for answers
 would kill a legitimate large batch. A generator computes under the same trust
-as an executor, and a runaway one is interrupted the way any run is — Ctrl-C,
+as an executor, and a runaway one is interrupted the way any search is — Ctrl-C,
 with the store losing nothing and the resume continuing from it.
 
 ### Identity and packaging of a registered program
@@ -1200,24 +1208,24 @@ obligation without joining it. Where a config resolves into its registry, the
 program file each `[domain.*]` entry names is read and its blake3 digest held;
 each session journals `ProgramBound { format, binary, digest }`, provenance
 beside `WorkerBound`'s device and driver, excluded from every equality
-criterion. Under the run lock, before any task runs, a session
-compares its digest against the last one the run's journal recorded:
+criterion. Under the search lock, before any task runs, a session
+compares its digest against the last one the search's journal recorded:
 
-- equal, or absent because this is the run's first session — the run proceeds;
-- different — the run stops, naming the format, the path, both digests, and the
+- equal, or absent because this is the search's first session — the search proceeds;
+- different — the search stops, naming the format, the path, both digests, and the
   flag that would continue, and appending no record, so the journal's digest
   history names the builds that drove sessions;
-- different, under `sima run <config> --accept-binary` — the run proceeds, and
+- different, under `sima search <config> --accept-binary` — the search proceeds, and
   the accepted build is what the next session compares against.
 
 The digest stays out of the environment hash by decision. Hashing it would turn
-a changed program into a different run — new keys, an empty frontier, a restart
+a changed program into a different search — new keys, an empty frontier, a restart
 from zero — and the user would never be asked. Journaling it makes the change a
 question the user answers.
 
 Two limits are documented rather than mechanized:
 
-- **A fresh run that reuses an earlier run's records passes no gate.** A record
+- **A fresh search that reuses an earlier search's records passes no gate.** A record
   is addressed by its content alone, and giving each one a build to name would
   reintroduce identity machinery this milestone deliberately keeps out of the
   store.
@@ -1244,7 +1252,7 @@ manifest of the sources that travelled — agreed at every worker handshake:
   a worker answering another digest, a worker answering none where a program
   was sent, and a worker naming a program where none was are all refused,
   naming both sides — because each means the machine runs something other than
-  what this run put there. A refusal fails the spawn, so no work follows.
+  what this search put there. A refusal fails the spawn, so no work follows.
 - **What is recorded.** `WorkerBound` carries the answered digest, absent for a
   format this build answers, so the journal states which program each machine
   ran beside where it ran.
@@ -1267,7 +1275,7 @@ files and nothing else — so the binary carries it instead.
 package this build embeds; any other value is refused at load, naming the
 config, the format, the key, and the value. The key is independent of `payload`
 and enters no hash: where a program reads its library from is operational, so
-run identity is untouched.
+search identity is untouched.
 
 **Materialization happens at config load, on every machine alike.**
 
@@ -1289,21 +1297,21 @@ written last and atomically.
 **The path reaches the program through the spawn policy.** `installed/` leads
 the program's module path — `PYTHONPATH` for Python — ahead of anything the
 machine already holds under that name, and the domain service and every worker
-of the run share one policy, so both halves of a program read one package. A
+of the search share one policy, so both halves of a program read one package. A
 copy installed on the machine is shadowed by the vended one, which is the
 point: the vended copy is the one whose protocol matches the binary driving the
-run.
+search.
 
 **A migration carries the declaration.** The synthesized far entry states
 `sdk = "python"`, and the destination's own binary vends its own copy at load,
 so the package itself stays off the wire.
 
 `sima sdk <language> --out <dir>` writes the same package by hand, for
-developing a program outside a run.
+developing a program outside a search.
 
 ### Carrying a registered program
 
-A migration moves a run onto a machine that has never seen its program, so the
+A migration moves a search onto a machine that has never seen its program, so the
 program travels with it. Two keys on the entry state what:
 
 ```toml
@@ -1317,7 +1325,7 @@ The payload carries the program's own files. The SDK travels inside the binary
 and is vended on the destination, and a third-party dependency is the payload's
 own business, carried in a directory payload and installed by its script.
 
-**The program travels per run, as objects.** Nothing is published and no image
+**The program travels per search, as objects.** Nothing is published and no image
 is rebuilt. The payload's files become ordinary content-addressed objects, one
 **manifest** object names them — relative path, execute bit, and the object
 holding each file's bytes, plus the install script's text — and the manifest's
@@ -1341,7 +1349,7 @@ non-regular entry, a file name that is not UTF-8, a tree holding no file, a file
 above the frame cap a transferred object may reach, and several files with no
 install script to say which of them is the program.
 
-**Installation happens inside the far `sima run`, at config load.** There is no
+**Installation happens inside the far `sima search`, at config load.** There is no
 installation verb: an entry carrying `payload_digest` has its program built
 where the config resolves, before the binary that entry names is spawned.
 
@@ -1372,12 +1380,12 @@ there. That is what makes a reattach, a `sima status`, and a follow attach cost
 nothing, and what makes a changed payload reinstall exactly once. The decision
 is taken again under the tree's lock, so concurrent loaders build one tree
 between them, and the kernel frees a crashed installer's lock the way it frees
-the store's run lock.
+the store's search lock.
 
-**Accepting a changed program across a migration.** The far run journals what
+**Accepting a changed program across a migration.** The far search journals what
 it installed and refuses a build different from the one that drove it, exactly
-as a local run does. `sima migrate <config> --accept-binary` travels to the far
-`sima run`'s argv: the comparison is that run's, and the acceptance is the
+as a local search does. `sima migrate <config> --accept-binary` travels to the far
+`sima search`'s argv: the comparison is that search's, and the acceptance is the
 operator's, stated where the migration is asked for.
 
 **Packaging is a convention.** The packaging unit is the unit of registration:
@@ -1395,13 +1403,13 @@ claim one thing while the machines answer another.
 
 ### Delivering a program to a machine
 
-A fleet machine has no program either, so a run that puts work on one delivers
+A fleet machine has no program either, so a search that puts work on one delivers
 it there first. The delivery is the far half of a store sync plus the install a
 config load already performs, which is why it needs no verb of its own:
 `sima sync-serve` gains a second form.
 
 ```
-sima sync-serve <store> --run <id>                  the migration's form
+sima sync-serve <store> --search <id>                  the migration's form
 sima sync-serve <dir> --payload <D> [--sdk <S>]     the delivery's
 ```
 
@@ -1417,7 +1425,7 @@ flowchart LR
     ING["ingest the payload closure<br/>and the SDK objects"]
   end
   subgraph MACH["machine, under &lt;root&gt;/programs"]
-    ST["store/<br/>shared across runs"]
+    ST["store/<br/>shared across searches"]
     TREE["&lt;payload digest&gt;/<br/>payload, installed/program,<br/>installed.digest"]
     SDK["sdk/&lt;sdk digest&gt;/installed"]
   end
@@ -1428,7 +1436,7 @@ flowchart LR
 ```
 
 **Where it lands** is under the `root` the machine's `[host.*]` entry already
-names, in a directory shared by every run that delivers there:
+names, in a directory shared by every search that delivers there:
 
 ```
 <root>/programs/
@@ -1441,7 +1449,7 @@ A digest directory is 64 hex characters, so neither reserved name can collide
 with one. Two properties make delivering to a machine twice cost nothing: the
 store is shared, so the sync's own want/have negotiation moves an unchanged
 program's bytes once ever; and both trees are built under the stamp, so a
-machine already holding a digest runs no install and several runs delivering at
+machine already holding a digest runs no install and several searches delivering at
 once build one tree between them.
 
 **The SDK ships from the orchestrator's build**, not from the machine's own
@@ -1463,13 +1471,13 @@ its workers run in, with the delivery directory bind-mounted at the identical
 path on both sides — an install script has to build in the environment the
 program will run in, and the stamp it writes has to name the same file to the
 spawn that reads it later. A machine that cannot receive the program fails the
-run; a rented one records an incident, is excluded, and is replaced, because a
-rented machine is disposable and one that cannot serve the run should cost a
-machine rather than the run.
+search; a rented one records an incident, is excluded, and is replaced, because a
+rented machine is disposable and one that cannot serve the search should cost a
+machine rather than the search.
 
 **Every spawn is agreed by digest.** The worker there is the installed entry
 point, run under a shell that reads the machine's own `installed.digest` and
-states it as `SIMA_PROGRAM_DIGEST` before exec. The run compares what comes
+states it as `SIMA_PROGRAM_DIGEST` before exec. The search compares what comes
 back against what it sent, so the agreement attests that machine's disk state:
 the value is computed on the machine and compared on the orchestrator, and a
 tree that drifted fails the spawn naming both digests.
@@ -1477,14 +1485,14 @@ tree that drifted fails the spawn naming both digests.
 **Placement asks the program.** A pool with device tables cannot ask the image's
 worker about a format the image does not carry, so it asks the delivered program
 over the domain service it already answers — only the program knows which
-devices its own backend opens. The readiness probe for such a run names no
+devices its own backend opens. The readiness probe for such a search names no
 format at all: `sima-worker --enumerate-devices` with no argument lists every
 device every compiled backend reaches, which states that the machine is up and
 nothing about where the work goes.
 
 That last point is what lifts a migration onto a rented machine. Such a machine
-could say nothing about the run before it had the program, so the config
-synthesized for it states no worker layout, and the far run derives one worker
+could say nothing about the search before it had the program, so the config
+synthesized for it states no worker layout, and the far search derives one worker
 per usable device from the program's own enumeration once its load has installed
 it. The deferral is scoped by `payload_digest`, a key only a migration writes,
 so a hand-written config still states its own layout.
@@ -1494,13 +1502,13 @@ so a hand-written config still states its own layout.
 The executable substance behind each format id. A `Domain` groups what a
 format id binds: the executor that evaluates the format's specs, the devices
 that executor's work can run on, the environment that enters task identity,
-and the translation of the domain-owned `[run.params]` section into the opaque
+and the translation of the domain-owned `[search.params]` section into the opaque
 canonical params bytes. The device enumeration travels with the domain, so
 only its own execution backend's devices are ever offered to its work and
 adding a backend adds no case to any match.
 Generators dispatch separately — one format has one executor but many
 generators — and each generator owns the translation of its own
-`[run.generator]` keys. Both dispatches are static matches over the formats
+`[search.generator]` keys. Both dispatches are static matches over the formats
 this build carries, keyed on the id; an id this build does not carry is a
 validation error here, and the registry one layer up is what routes such an id
 to the program that does carry it. Each domain's pieces — executor, generator,
@@ -1519,7 +1527,7 @@ translation, and owns the canonical codecs its specs and params hash through.
 Human-facing TOML becomes the model's opaque canonical bytes only here,
 through each domain's own codecs — an identity-bearing encoding is never
 hand-rolled at the config layer. The pipeline parses the file structurally and
-hands each opaque section (`[run.params]`, the `[run.generator]` keys) to the
+hands each opaque section (`[search.params]`, the `[search.generator]` keys) to the
 domain and generator the ids name; the domain returns the canonical bytes.
 `toml` is a dependency of both layers: the pipeline reads the file, a domain
 reads its own sections.
@@ -1530,7 +1538,7 @@ The stub domain supplies the contracts without a GPU or a store, so the
 scheduler has a deterministic, programmable substrate for its failure matrix:
 a spec carries a stub program selecting one behavior — succeed, flaky (fail a
 bounded number of attempts, then succeed), reject definitively, panic, sleep,
-or accumulate, the stateful behavior segmented runs chain through: k steps of
+or accumulate, the stateful behavior segmented searches chain through: k steps of
 `acc = derive(acc, step)` keyed by the absolute step index, committing the
 resulting `(step, acc)` state under the `state` artifact and offering it as a
 checkpoint at every step boundary. The absolute-step keying makes the
@@ -1676,10 +1684,10 @@ accumulate in the same order. Its digest joins the environment: the reduction's
 output gates committed bytes, so editing it must change task keys exactly as
 editing a step kernel does.
 
-**The snapshot predicate.** A run may gate the committed state snapshot on a
+**The snapshot predicate.** A search may gate the committed state snapshot on a
 stat, so a dead candidate returns its scalars alone and no megabytes of grid.
 The predicate is one condition — a scalar name and a minimum,
-`snapshot_when = { scalar = "activity", min = 1e-4 }` in `[run.params]`; absent,
+`snapshot_when = { scalar = "activity", min = 1e-4 }` in `[search.params]`; absent,
 the snapshot is always committed. It commits the state artifact exactly when the
 named scalar is at least the minimum and every scalar in the list is finite, so
 a diverged candidate — a non-finite value in any scalar — drops its snapshot
@@ -1696,14 +1704,14 @@ per-backend determinism tier the float families already live at.
 
 The predicate must live where it cannot break the invariant that **committed
 artifacts are single-valued per task key**: within a store each key maps to one
-record, with cross-class float divergence the recorded exception (a fresh re-run
+record, with cross-class float divergence the recorded exception (a fresh execution
 on another device class may differ in the last bits). So it rides in the
 identity-bearing params blob, never in an operational section, and it is
-confined to **unsegmented runs**: all segments of a chain share one params
+confined to **unsegmented searches**: all segments of a chain share one params
 blob, and a chain successor faults on a predecessor whose state a predicate
 dropped, so a params-carried predicate would gate every segment identically and
 break the
-chain. A predicate on a segmented run is a config-load validation error, and
+chain. A predicate on a segmented search is a config-load validation error, and
 the scalar name is validated at translation against the names the model's
 reduction emits.
 
@@ -1711,7 +1719,7 @@ reduction emits.
 
 Execution backends live under `crates/toolkits/` as `sima-toolkit-*` crates. A
 toolkit is a compute library, not an `Executor`: it holds no store handle and
-builds no run identity, so it sits below `sima-domains` and beside
+builds no search identity, so it sits below `sima-domains` and beside
 `sima-contracts` in the crate graph. A domain depends on the toolkits its
 executors compute on, and each toolkit isolates its own dependency set behind a
 surface stated in the developer-facing contract — the authoring language, not
@@ -1781,7 +1789,7 @@ driver present. The surface mirrors the WGSL toolkit's — `Context`, `Buffer`,
 **Kernels ship as PTX.** A kernel is authored in CUDA C and compiled once with
 NVRTC under pinned options; the PTX is committed beside its source and the
 driver's just-in-time compiler lowers it to machine code for whatever card
-loads it. Nothing compiles CUDA C while a run executes, so a worker image needs
+loads it. Nothing compiles CUDA C while a search executes, so a worker image needs
 only the driver, which arrives with the card. Each kernel carries a regeneration
 test asserting its committed artifact is exactly what its committed source
 compiles to; regenerating needs `libnvrtc` alone, which opens no device.
@@ -1799,14 +1807,14 @@ understands, and the two are set by different things:
   it targets.
 
 Regeneration is therefore pinned to NVRTC 12.0.x, which emits ISA 8.0 and loads
-on r525 and newer, below the driver branch of any host a run rents. Later
+on r525 and newer, below the driver branch of any host a search rents. Later
 toolkits raise it: 12.9 emits ISA 8.8 and needs r575.
 
 **Identity surface.** What a domain records for a CUDA kernel is the digest of
 the **PTX** — the artifact that executes — rather than a source digest paired
-with a compiler version the run has to trust. The compiler id therefore states
+with a compiler version the search has to trust. The compiler id therefore states
 only what that PTX targets. This is the same content-reproducible tier the WGSL
-toolkit reaches by the other route: there the lowering happens during the run,
+toolkit reaches by the other route: there the lowering happens during the search,
 so the source is hashed and the compiler that lowers it is named.
 
 **Device identity.** CUDA addresses devices by ordinal and reports a PCI bus
@@ -1828,7 +1836,7 @@ a failure at the call that caused it.
 
 ## `sima-scheduler` (L6)
 
-Runs a search from `(RunConfig, store state)`. It is the layer that bridges
+Runs a search from `(SearchConfig, store state)`. It is the layer that bridges
 pure executor output into durable store state, so the executor trust boundary
 lives on the worker protocol: the executor returns values, and only the worker
 writes to the store. It depends on `sima-contracts` (to run generators and
@@ -1839,9 +1847,9 @@ boundary holds in the crate graph.
 ### Task source
 
 A task source derives the currently-runnable frontier from `(config, store
-state)`. One interface covers both sources, selected by the run config's
+state)`. One interface covers both sources, selected by the search config's
 segment count; a source returns each runnable task exactly once across the
-run, and its key set is complete once a poll has returned empty at an idle
+search, and its key set is complete once a poll has returned empty at an idle
 pool — the finalize point.
 
 The static-batch source runs a resolved generator once, stores each spec
@@ -1852,7 +1860,7 @@ unfinished work. The frontier is a pure function of `(config, environment)`.
 
 The driver polls the source whenever the ready queue is empty and a lease
 release has happened since the last poll — a release is the only point in a
-run where the store state a source derives new tasks from can have changed —
+search where the store state a source derives new tasks from can have changed —
 so a chain's successor is handed out the moment its predecessor commits,
 leases outstanding or not, and the bounded-wait wakeups carry no polling
 storm. An empty poll finalizes only at an idle pool; with leases outstanding
@@ -1875,30 +1883,30 @@ one chain per generated spec:
 - **The state-artifact convention** — a segmented executor commits its
   continuation state under the artifact name `state`. A committed segment
   record without it is a validation fault naming the artifact and the task
-  key: the misconfiguration signal for a segmented run over a stateless
+  key: the misconfiguration signal for a segmented search over a stateless
   domain.
 - **Resume is construction** — the source fast-forwards each chain against
   the store at construction, walking past every already-committed segment,
   and re-runs that walk whenever a handed-out segment may have committed.
   The frontier is derived from `(config, store state)`, so crash recovery,
-  interrupt resume, and re-run are the one code path.
+  interrupt resume, and running again are the one code path.
 - **Convergence** — identities are content-addressed, so a state fixed point
   (or cycle) makes later segments reuse earlier keys: the walk stays bounded
   by the segment count, already-committed successors advance instantly, and
   the key set deduplicates, satisfying finalize's duplicate rejection.
-  Cross-run reuse of chain prefixes in a shared store is the same mechanism:
-  a longer run over a store holding a shorter run's chain re-executes only
+  Cross-search reuse of chain prefixes in a shared store is the same mechanism:
+  a longer search over a store holding a shorter search's chain re-executes only
   the segments past the shared prefix.
 
 ### Resume checkpoints
 
 Checkpoints are the disposable crash-resume mechanism, orthogonal to
 segmentation: during a segment's execution the running task periodically
-writes its full continuation state to the run's per-chain slot, overwriting
+writes its full continuation state to the search's per-chain slot, overwriting
 the previous write, and a restarted attempt continues from the saved bytes
 instead of the segment's start.
 
-- **The slot** — `runs/<run-id>/checkpoint/<chain>`, owned by the store and
+- **The slot** — `searches/<search-id>/checkpoint/<chain>`, owned by the store and
   written through its one atomic-write path. Latest-only: the next save, and
   the next segment's saves, overwrite it; nothing is ever deleted.
 - **Staleness** — the slot frame carries the owning task's key. A slot that
@@ -1919,7 +1927,7 @@ instead of the segment's start.
 ### Worker transport
 
 Execution happens in worker processes: the parent spawns one `sima-worker`
-child per worker slot, alive until the run ends and replaced only when it
+child per worker slot, alive until the search ends and replaced only when it
 dies. The child hosts the domain executor and nothing else — it is never
 given the store path, so the pure-compute executor invariant is OS-enforced.
 The boundary is two traits the scheduler is written against: `WorkerTransport`
@@ -1938,7 +1946,7 @@ little-endian payload length, then a payload built with the canonical
 `Enc`/`Dec` primitives — used for their checked framing; frames are
 transport encoding, never identity-bearing. The handshake carries the
 protocol version, the slot's worker id (so the child can attribute events
-without a side channel), the run's format id (the child resolves its
+without a side channel), the search's format id (the child resolves its
 executor from it, once), the checkpoint cadence, and the device the child
 computes on; each task is one `Assign` frame answered by zero or more
 `Save` frames and one terminal frame, and `Event` frames may interleave
@@ -1950,7 +1958,7 @@ timed receive and a kill never races a blocking read.
 An `Event` frame carries the serde_json bytes of a `sima-trace` event,
 opaquely inside the canonical frame — observational serde-world data
 traveling the same way spec and params bytes travel opaquely elsewhere. The
-reader thread parses each one and emits it to the run's collector, filling
+reader thread parses each one and emits it to the search's collector, filling
 a diagnostic's worker and host attribution where the child left them unset;
 the frames never reach the lease loop, so diagnostics cannot perturb
 outcome classification. Malformed event bytes never kill the worker: they
@@ -1966,7 +1974,7 @@ attributed to the worker and the pool's host label, capped at 4096 bytes
 with a trailing truncation marker. The cap bounds the assembly buffer
 itself — bytes past it are discarded as they arrive — so a child that
 streams without newlines (a progress bar repainting with carriage returns)
-costs a constant buffer for the life of the run. Everything a child prints
+costs a constant buffer for the life of the search. Everything a child prints
 — toolkit
 validation messages, pre-handshake errors, the default panic hook's output
 — lands in the journal correlated to the worker and host that produced it.
@@ -1975,7 +1983,7 @@ transport inherits the capture through the shared spawn machinery: ssh
 carries the container's stderr to the local client's stderr pipe.
 
 The device travels as a `DeviceBinding` — a class and the member within it —
-and is absent for a run that leaves the choice to the backend. The child
+and is absent for a search that leaves the choice to the backend. The child
 answers `Ready` with the name of the device it opened, empty for a domain
 that uses no device; the parent journals that answer as `WorkerBound`, so the
 record of where work ran is the child's own account rather than the parent's
@@ -2003,12 +2011,12 @@ outcome is turned into an action:
   cap, after which the transient failure becomes definitive. The child
   stays alive and may execute the retry.
 - `Done(Rejected)`, or a `Failed` whose retries are exhausted, or a
-  `Panicked` frame → a definitive failure that terminates the run. The
+  `Panicked` frame → a definitive failure that terminates the search. The
   child catches the executor's panic and reports it with the payload as its
   reason; classification authority stays with the parent. A panic anywhere
   in the parent's own path is a scheduler bug and propagates.
 - A `Fault` frame — the executor returned `Err` — is an infrastructure
-  fault and fails the run with an error.
+  fault and fails the search with an error.
 - A child death without an outcome — crash, OOM kill, externally killed —
   is a transient failure, retried up to the attempt cap, and the worker
   spawns a replacement child before pulling the next task. A frame that
@@ -2021,7 +2029,7 @@ travel solely to the journal.
 
 ### Workers on another machine
 
-A run's worker pool extends to the machines its config declares, reached over
+A search's worker pool extends to the machines its config declares, reached over
 ssh. The wire protocol already ships every task input and output inline — the
 store never leaves the orchestrator — so such a worker is the subprocess
 transport with a longer command line. The subprocess transport takes a command
@@ -2041,7 +2049,7 @@ carries authentication, so there is no ssh library dependency. An
 transport omits the ssh prefix and runs the runtime directly, the same mechanism
 minus the ssh hop.
 
-- **Worker pools.** A run drives a slice of pools: the orchestrator's first,
+- **Worker pools.** A search drives a slice of pools: the orchestrator's first,
   then one per machine the fleet resolved to, in member order. Each pool pairs a
   transport with the machine its workers run on and the device slots to spawn
   against it; worker ids stay global and sequential across pools. Placement is
@@ -2068,7 +2076,7 @@ minus the ssh hop.
   device tables the orchestrator does. Resolving them needs that machine's
   device list, so `sima-worker` doubles as the probe: `sima-worker --enumerate-devices
   <format>` prints the devices that format's program can run on as JSON and
-  exits. At run start the orchestrator verifies each machine's image is present,
+  exits. At search start the orchestrator verifies each machine's image is present,
   then runs the probe through that machine's container and reuses the same
   selector resolution unchanged.
 
@@ -2087,7 +2095,7 @@ minus the ssh hop.
   `debian:bookworm-slim` runtime stage — the development host's glibc is newer
   than any stable base, so the binaries are built inside. `sima-worker` is the
   entrypoint, so a worker starts as it always has; `sima` is on the path beside
-  it because a machine rented to host a [migrated](#migration) run drives it
+it because a machine rented to host a [migrated](#migration) search drives it
   from inside this image. One image serves both, so there is one thing to build
   and one thing to publish. The runtime stage bakes the Vulkan loader and
   the Mesa ICDs; NVIDIA user-space libraries are not baked, since they must
@@ -2105,9 +2113,9 @@ and a record held on both sides under one key must be byte-identical or the
 sync fails naming the key.
 
 An inventory and a request each travel as a sequence of bounded chunks, the
-last stating that it is the last. A run's whole inventory in one frame would
+last stating that it is the last. A search's whole inventory in one frame would
 cross the frame cap at around 1.3M tasks, past which sync is impossible rather
-than slow; chunking bounds the frame instead of the run. Each side still reads
+than slow; chunking bounds the frame instead of the search. Each side still reads
 the whole peer inventory before computing the difference — the set arithmetic
 is over the accumulated inventory, and per-item verification is unchanged — so
 the O(N) read per session stands, which is the design: verified reads are what
@@ -2117,7 +2125,7 @@ Its scope is deliberately narrow:
 
 | Data              | Synced? | Why                                              |
 |-------------------|---------|--------------------------------------------------|
-| task records      | yes     | the run's durable results and closure            |
+| task records      | yes     | the search's durable results and closure            |
 | CAS objects       | by scope | the caller chooses; see below                   |
 | checkpoint slots  | no      | mid-segment scratch; segments are the resume point |
 | placement slots   | no      | advisory; re-binds greedily on the other side    |
@@ -2132,14 +2140,14 @@ nobody will open: [migration](#migration) pushes the identity components plus
 each chain's frontier state, since those are the only states the far side reads.
 
 A store that took a named set therefore holds records whose artifacts it does
-not have. Two things such a store cannot do: answer `run_closure`, which
-enumerates everything a run references, and serve those objects to a third
+not have. Two things such a store cannot do: answer `search_closure`, which
+enumerates everything a search references, and serve those objects to a third
 machine. It can still derive the frontier and run it, which is what it was sent
 for.
 
 ### Device placement
 
-A machine's GPUs are rarely equal, and a run spreads its pool across them.
+A machine's GPUs are rarely equal, and a search spreads its pool across them.
 A machine's device tables — `[[orchestrator.device]]` for this one,
 `[[host.<name>.device]]` for a declared one — name the devices and how many
 workers each carries; the pool is their sum, and one slot per (entry, worker)
@@ -2148,7 +2156,7 @@ execution backend mints for a kind of device — two identical cards are one
 class with two members, interchangeable by declaration, which is why a class
 carries no member and work bound to one may run on either card. A selector
 names a device by a case-insensitive substring of its name or by its exact
-class, and resolves against the machine's hardware when a run starts, never
+class, and resolves against the machine's hardware when a search starts, never
 when a config is read: `sima status` and `sima report` work where no device
 exists.
 
@@ -2170,7 +2178,7 @@ interpreting it.
   devices carry no configuration space is under the same rule: it mints
   whatever distinguishes its devices.
 - **No scheme is spelled into the name.** Classes are compared only within one
-  run, and a run has one format, one domain, one backend, so a prefix naming
+  search, and a search has one format, one domain, one backend, so a prefix naming
   the backend or the identity scheme would distinguish nothing that ever meets
   while making every selector longer and coupling it to the backend a format
   happens to use.
@@ -2180,8 +2188,8 @@ interpreting it.
   carries the name and the member.
 
 **The principle: device binding is derived operational state, never
-identity.** A run id never encodes devices; the store records what actually
-happened; hardware changes never strand a run.
+identity.** A search id never encodes devices; the store records what actually
+happened; hardware changes never strand a search.
 
 Placement is **greedy** and **sticky**:
 
@@ -2194,12 +2202,12 @@ Placement is **greedy** and **sticky**:
   candidate's trajectory is internally coherent and a retried attempt
   reproduces what the failed attempt would have committed.
 - **Rebind is loud, and only on necessity** — a binding moves when its class
-  is absent from the run's devices, which means the hardware changed between
-  sessions. Run continuity outranks placement, so the work moves rather than
+  is absent from the search's devices, which means the hardware changed between
+  sessions. Search continuity outranks placement, so the work moves rather than
   stranding, and the journal records the move as `ChainRebound`.
 
-The binding lives in a per-run operational slot beside the resume
-checkpoints — `runs/<run-id>/placement/<chain>`, keyed by the same chain id —
+The binding lives in a per-search operational slot beside the resume
+checkpoints — `searches/<search-id>/placement/<chain>`, keyed by the same chain id —
 holding the class as serde JSON: the human-readable operational world the
 manifest and journal live in, never the canonical identity encoding. It is
 written when a chain first binds and overwritten only by a rebind. A crash
@@ -2212,13 +2220,13 @@ there is nothing left to place, so it gets no slot.
 **Starvation is bounded, and the price of coherence.** With stickiness, a
 class's workers can idle while another class finishes chains bound to it. The
 bound is (chains in flight on that class × their remaining segments); an
-unbound chain is available to every class. A run with one implicit class reads
+unbound chain is available to every class. A search with one implicit class reads
 no placement state at all: its workers take the head of the queue, exactly as
-a run with no placement state does.
+a search with no placement state does.
 
-**What this deliberately does not give:** a fresh re-run of a multi-class
+**What this deliberately does not give:** a fresh execution of a multi-class
 config is not bit-reproducible for float domains, because which class first
-pulls a given chain depends on scheduling timing. Single-class runs keep full
+pulls a given chain depends on scheduling timing. Single-class searches keep full
 per-backend determinism, and exact reproduction of a specific candidate means
 running it on a single-device config. This is the two-tier determinism
 philosophy applied to placement.
@@ -2226,26 +2234,26 @@ philosophy applied to placement.
 ### Definitive failure, clean and resumable
 
 The store models success only — a record records artifacts. A definitive
-failure is recorded in the journal and terminates the run: no manifest is
+failure is recorded in the journal and terminates the search: no manifest is
 written, every committed success remains, and nothing is left that blocks a
-re-run. Fixing the cause and re-running the same config re-executes only the
+execution. Fixing the cause and re-running the same config re-executes only the
 unfinished work. If the fix changes an identity input, the task keys change and
-the re-run is a fresh recompute — correct by the determinism model. The run
+the repeated execution is a fresh recompute — correct by the determinism model. The search
 returns `Finalized` once every task committed and the manifest is written, or
 `Failed { task, reason }` on a definitive failure; the two mirror the
 executor's own `Ok(Outcome)`/`Err` split one level up.
 
 An infrastructure fault — an executor error, a commit failure, a state-load
 failure — outranks a definitive candidate failure: the result path itself
-broke, so the run surfaces the error and emits a `Faulted` event for the task
+broke, so the search surfaces the error and emits a `Faulted` event for the task
 rather than reporting a clean `Failed`. A journal fault, by contrast, yields to
 a domain `Failed` outcome: the journal is observational, so a definitive
 candidate failure is returned intact even when the journal degraded, and the
-journal fault resurfaces on the next run that finalizes over the same store.
+journal fault resurfaces on the next search that finalizes over the same store.
 
-### Run control: observer and interrupt
+### Search control: observer and interrupt
 
-The driver takes a `RunControl` — the caller's handles into a running
+The driver takes a `SearchControl` — the caller's handles into a running
 search:
 
 - **observer** — the collector's record consumer: invoked with each typed
@@ -2253,9 +2261,9 @@ search:
   typed records, journal order, one calling thread. Progress rendering
   consumes this boundary.
 - **interrupt** — a level-triggered flag the driver polls within a bounded
-  wait. Once set, the run winds down gracefully: no more tasks are handed
+  wait. Once set, the search winds down gracefully: no more tasks are handed
   out, the attempt in flight on each worker is abandoned within one
-  wind-down poll, queued tasks are abandoned, and the run returns
+  wind-down poll, queued tasks are abandoned, and the search returns
   `Interrupted` with no manifest written — the store stays resumable, and
   the next orchestration re-derives each abandoned task in its frontier and
   resumes it from the checkpoint it had laid.
@@ -2263,7 +2271,7 @@ search:
 The wind-down states form a precedence order — running < interrupted <
 failed < fault — and each setter only upgrades: a definitive failure or an
 infrastructure fault landing during an interrupt wind-down still decides
-the run, and among faults the first wins.
+the search, and among faults the first wins.
 
 **Every child sima spawns leads a process group of its own.** A terminal
 delivers Ctrl-C to every process in its foreground group, so a worker, a
@@ -2298,18 +2306,18 @@ scalar value serializes to `null` and reads back as `NaN`, so a diverged
 candidate can never fail a journal append.
 The vocabulary:
 
-- **run started** — the run began; carries the planned task total, those
+- **search started** — the search began; carries the planned task total, those
   already committed and those still to run.
 - **queued** — a task entered the ready queue.
 - **leased** — a worker leased a task for one attempt. Rendered as the
-  attempt beginning, which is where a run's terminal would otherwise fall
+  attempt beginning, which is where a search's terminal would otherwise fall
   silent for as long as a task takes.
 - **committed** — a task's result was committed, referencing its record.
 - **failed** — an attempt failed transiently and may be retried.
 - **retried** — a failed task was re-enqueued for another attempt.
 - **rejected** — a task failed definitively and will not be retried.
 - **faulted** — an infrastructure fault (an executor error, a commit failure,
-  or an input-state load failure) hit a task's attempt; the run terminates
+  or an input-state load failure) hit a task's attempt; the search terminates
   with an error.
 - **lease expired** — an attempt ran past the attempt timeout: its worker
   process is killed and the attempt fails transiently.
@@ -2320,19 +2328,19 @@ The vocabulary:
   a long attempt gives that it is computing rather than wedged. Rate-limited
   where it is emitted, to the attempt's first save and one per ten seconds
   after it, so a domain checkpointing every second floods neither the journal
-  nor the terminal. A run whose tasks never checkpoint has no such sign, and
+  nor the terminal. A search whose tasks never checkpoint has no such sign, and
   its attempts are bounded by `attempt_timeout` instead.
 - **worker bound** — a worker's child reported the device it computes on, at
   every spawn and respawn.
 - **driver changed** — a worker's child reported a driver other than the one
-  the run's journal last recorded for the same host and device; a warning,
+  the search's journal last recorded for the same host and device; a warning,
   never a gate.
-- **chain rebound** — a chain's device class was absent from the run's
+- **chain rebound** — a chain's device class was absent from the search's
   devices, so its work moved to a class that is present.
-- **run finalized** — every task committed and the manifest was written.
-- **run failed** — a definitive candidate failure terminated the run; no
+- **search finalized** — every task committed and the manifest was written.
+- **search failed** — a definitive candidate failure terminated the search; no
   manifest was written.
-- **run interrupted** — the caller interrupted the run: the attempts in
+- **search interrupted** — the caller interrupted the search: the attempts in
   flight were abandoned, no manifest was written, and the store is
   resumable.
 - **diagnostic** — a correlated line of observational text: captured worker
@@ -2341,27 +2349,27 @@ The vocabulary:
   known. Status ignores it entirely; the CLI renders warn and error lines
   and keeps info journaled, never echoed.
 
-The verb that puts a run on a machine emits five more, one as each phase of
-the placement begins — **renting**, **awaiting machine**, **sending run**,
-**installing program**, **starting run**. They state where a placement is
-while there is no far run to journal anything, which is the stretch an
+The verb that puts a search on a machine emits five more, one as each phase of
+the placement begins — **renting**, **awaiting machine**, **sending search**,
+**installing program**, **starting search**. They state where a placement is
+while there is no far search to journal anything, which is the stretch an
 operator would otherwise read as a hang; `renting` carries what is now being
 paid for. The first two belong to the acquisition rather than to the verb, so
 a fleet emits them too, once per machine it takes: renting and awaiting
-machine are what any run says about a rental between taking the offer and the
+machine are what any search says about a rental between taking the offer and the
 machine answering. Being events, they are journaled like any other, so what an
-operator watched is also what the run's journal holds. They move no counter
+operator watched is also what the search's journal holds. They move no counter
 and free no worker: status, timeline, and task history each pass over them.
 
-The driver spawns the trace collector over the run's journal writer, with
+The driver spawns the trace collector over the search's journal writer, with
 the caller's observer as its record consumer; the driver, the workers, and
 the transports' reader threads emit through cloned emitters, and the one
 collector thread is the single-writer boundary the append contract requires.
 The journal write for an event happens before the observer sees it, and the
 observer sees records in journal order. Event arrival order across threads
-varies between runs; the journal is observational and excluded from every
+varies between searches; the journal is observational and excluded from every
 equality criterion, so the manifest — sorted by task key at finalize — is
-byte-identical across runs regardless.
+byte-identical across searches regardless.
 
 ### Driver provenance
 
@@ -2381,14 +2389,14 @@ The decision, on record:
   `worker bound` — the audit trail for which driver produced which session's
   results.
 - **Warning**: a session emits `driver changed` when a spawn's reported
-  driver differs from the last one the run's journal recorded for the same
+  driver differs from the last one the search's journal recorded for the same
   host and device. The comparison state is seeded from the journal before the
   session appends and advances with each spawn, so one transition is
   journaled once, however many slots spawn on the pair. The CLI renders the
-  event as a warning line; the run proceeds — the driver is provenance, never
+  event as a warning line; the search proceeds — the driver is provenance, never
   an admission gate.
-- **Uncovered**: re-evaluation of a finalized run opens no device, so no
-  driver is read and nothing is compared. A finalized run re-finalized under
+- **Uncovered**: re-evaluation of a finalized search opens no device, so no
+  driver is read and nothing is compared. A finalized search re-finalized under
   a new driver reuses its results with only the journal to say which driver
   produced them; covering that case would mean probing the driver stack on a
   path that deliberately needs no GPU.
@@ -2404,10 +2412,10 @@ format to — and drives the scheduler over the configured store.
 
 The config file carries the same split the model enforces:
 
-- **`[run]`** — the identity section, canonicalized into `RunConfig`, so
-  its fields define the `RunId`: the root seed, the format, the optional
+- **`[search]`** — the identity section, canonicalized into `SearchConfig`, so
+  its fields define the `SearchId`: the root seed, the format, the optional
   segment count (at least 1; absent means a static batch), the generator
-  (its id plus the generator-owned keys), and the domain-owned run params.
+  (its id plus the generator-owned keys), and the domain-owned search params.
 - **`[config]`** — the global operational settings: the store path (optional,
   resolved relative to the config file's directory, and `.sima/store` when the
   key is absent), the attempt cap, an optional
@@ -2423,27 +2431,27 @@ into. One directory to ignore in a repository, and one to delete to reclaim
 what a config generated — and none of it enters a hash, so deleting it costs
 recomputation and never identity.
 
-Every section below `[run]` is operational and never hashed — a run resumed
+Every section below `[search]` is operational and never hashed — a search resumed
 with different parallelism, a different store path, or a different set of
 machines keeps its id. The structural keys are strict: an unknown key at any
 level is a validation error naming it.
 
 ### Declaring machines
 
-A run declares each machine it can use once, names it, and refers to it by name
+A search declares each machine it can use once, names it, and refers to it by name
 everywhere else.
 
 - **`[host.<name>]`** — one machine.
 - **`[host_class.<name>]`** — several identical machines in one entry.
-- **`[fleet]`** — a `members` list naming the hosts and classes a run may draw
+- **`[fleet]`** — a `members` list naming the hosts and classes a search may draw
   on. A collective, so it never declares an element.
 - **`[orchestrator]`** — this machine. A table, not an array, so the "one
-  orchestrator per run" invariant is the config's shape rather than a paragraph
+  orchestrator per search" invariant is the config's shape rather than a paragraph
   asserting it. Besides its own worker layout it names `migrate`, the
-  `[host.*]` entry a migration moves the run onto — never a class, and the named
+  `[host.*]` entry a migration moves the search onto — never a class, and the named
   entry's own form decides whether anything is rented.
-- **`[budget]`** — the run's spend ceiling over every rental it draws on, and
-  its wall-clock ceiling over its own computing. Run-global, because a run may
+- **`[budget]`** — the search's spend ceiling over every rental it draws on, and
+  its wall-clock ceiling over its own computing. Search-global, because a search may
   draw on several rented entries under one ceiling.
 
 **Addressing.** An entry's name is its ssh destination unless `ssh` says
@@ -2474,13 +2482,13 @@ error naming the key and the form.
 
 A rented machine states no worker layout: it did not exist when the config was
 written, so its devices come from the enumeration probe. `root` and `binary`
-describe where a migrated run's directory goes on a machine and which `sima`
+describe where a migrated search's directory goes on a machine and which `sima`
 drives it there; they belong to the machine because any host may become a
 migration target.
 
 `[orchestrator]` is a machine of yours, implicitly this one, so it takes the
 same worker-side keys an owned host does. It takes no `ssh` and no `provider`,
-being where the command was typed, and no `root` or `binary`, the run already
+being where the command was typed, and no `root` or `binary`, the search already
 being here. One asymmetry follows from the defaults: a host's `image` defaults,
 so it always runs its workers in a container and `runtime` and `run_args` are
 always meaningful there; the orchestrator's `image` does not, so naming one is
@@ -2490,20 +2498,20 @@ a container that does not exist and are rejected.
 **A machine runs one worker layout.** Either a plain `workers` count or device
 tables, never both and — on a machine of yours — never neither.
 
-### What a run uses
+### What a search uses
 
 ```
-sima run           the orchestrator alone
-sima run --fleet   the orchestrator plus every member of [fleet]
+sima search           the orchestrator alone
+sima search --fleet   the orchestrator plus every member of [fleet]
 ```
 
-Declaring a machine says a run *may* use it; the invocation says it *does*.
+Declaring a machine says a search *may* use it; the invocation says it *does*.
 Renting in particular must be asked for, since a config that declares a rented
-entry would otherwise make every later run spend money. Without the flag the
+entry would otherwise make every later search spend money. Without the flag the
 fleet is never resolved, so no provider is constructed and no credential is
 read. A config whose orchestrator declares no worker layout has nothing to
 execute on without the flag, which is a validation error naming it rather than a
-run that starts and stalls. A declared host or class that no `members` list
+search that starts and stalls. A declared host or class that no `members` list
 names is valid and unused — it is a machine you have written down, which is the
 point of naming them.
 
@@ -2514,30 +2522,30 @@ the code that owns it, never interpreting the content itself: the format and
 generator ids resolve through the registry — `sima-domains` for the formats
 this build carries (see L5), the program a `[domain.*]` entry names for the
 rest (see [Registering a domain](#registering-a-domain)) — and the opaque
-`[run.params]` and `[run.generator]` sections pass to the domain and generator
+`[search.params]` and `[search.generator]` sections pass to the domain and generator
 translations that turn them into canonical bytes. Identity-bearing bytes are
 produced only by those codecs, never hand-rolled here.
 
 ### Orchestration
 
-`orchestrate` opens the store (creating it where missing), takes the run's
-orchestrator lock, reads the run's environment and generator from the source
+`orchestrate` opens the store (creating it where missing), takes the search's
+orchestrator lock, reads the search's environment and generator from the source
 answering for its format, takes the worker binary from that same source — sima's
 own (the `SIMA_WORKER` environment variable, then `sima-worker` beside the
 current executable, then in its directory's parent) or the program the config
 routed the format to — and calls the scheduler over the subprocess transport;
 the lock is held for the whole call and releases on return.
 Resume and re-evaluation are this same call — the frontier re-derives from
-store state, so an interrupted or failed run continues where it stopped,
+store state, so an interrupted or failed search continues where it stopped,
 and a finalized one re-finalizes idempotently without touching an executor.
 
 ### Renting
 
 A rented entry — a `[host.*]` or `[host_class.*]` naming a `provider` — adds
-machines the run acquires for its own duration, beside the orchestrator's own
+machines the search acquires for its own duration, beside the orchestrator's own
 pool and any machine of yours the fleet names. Renting is operational, so it
-never enters the run id, the same rule every other machine follows. The
-constraints and the run's `[budget]` are the
+never enters the search id, the same rule every other machine follows. The
+constraints and the search's `[budget]` are the
 [`sima-provider`](#sima-provider) control plane's own types, mapped from the
 config's dollar figures to micro-USD.
 
@@ -2595,20 +2603,20 @@ every wait an acquisition spends — for a machine to report ready, and for the
 readiness probe that follows — so one Ctrl-C is answered while a boot is still
 running rather than after the entry's `ready_timeout`. What follows is the same
 wherever it lands: no further member is rented, every machine already acquired
-is released by its guard, and the run comes back interrupted, exits `130`, and
+is released by its guard, and the search comes back interrupted, exits `130`, and
 is resumable with nothing executed. A machine interrupted mid-wait carries no
 incident — it was never given the time its entry allows, so it has said nothing
 about itself, and an incident would exclude it from this acquisition's retries
-and blacklist it at two across runs. A machine that fails on its own still
+and blacklist it at two across searches. A machine that fails on its own still
 carries one. One line states the abandonment, naming how many machines the
-acquisition had and that they are gone, and it is the whole account a run
+acquisition had and that they are gone, and it is the whole account a search
 abandoned before it drove leaves.
 
 **Every member says what it took.** An acquisition is minutes of spending
 before a worker binds, so each member names itself, what it rented, and at
 what rate the moment its offer is taken — `renting cheap[0]: 1× GTX 1660 on
-8127-a41 at $0.056/hr` — under the run's own journal boundary, which
-orchestration opens around putting the run on its machines. The member's name
+8127-a41 at $0.056/hr` — under the search's own journal boundary, which
+orchestration opens around putting the search on its machines. The member's name
 is the entry that declared it and its index within that entry's count. The wait
 that follows names it too, and so does the delivery installing the program,
 because the members run together and their lines interleave. A member that
@@ -2642,7 +2650,7 @@ machine's host key cannot be known before the machine exists, so the connection
 accepts whatever key answers and remembers none — the key would otherwise
 accumulate in the operator's `known_hosts` forever, and a later rental at an
 address the marketplace recycled would present a key of its own and be refused,
-failing the run. The channel is therefore not protected against an active
+failing the search. The channel is therefore not protected against an active
 man-in-the-middle. A machine of yours is unaffected: its key belongs in the
 operator's file, which is where its declaration says it is reached from.
 
@@ -2666,10 +2674,10 @@ So the confidentiality of specs, params, and results is exposed, and so is the
 authenticity of a result on a channel with an active attacker in it. Against a
 passive one, or on the local network a machine of yours sits on, neither is.
 
-A run may draw on several rented entries, each with its own control plane, its
+A search may draw on several rented entries, each with its own control plane, its
 own specification, and its own shortfall policy. The budget is not theirs but
-the run's: one ceiling over every rental, assessed once per heartbeat however
-many entries the run drew on.
+the search's: one ceiling over every rental, assessed once per heartbeat however
+many entries the search drew on.
 
 **The ssh transport is swappable.** Each rented machine's pool spawns workers
 over `ssh -o StrictHostKeyChecking=accept-new … -- sima-worker` — no
@@ -2680,10 +2688,10 @@ loop's existing respawn machinery lands on a swapped machine without the
 scheduler, the driver, or the pool's slot list ever changing.
 
 **The supervisor** is one thread beside the scheduler, both in one scope so
-it borrows the store, lock, and guards. Each heartbeat it assesses the run's
+it borrows the store, lock, and guards. Each heartbeat it assesses the search's
 budget from the ledger once, then polls every rented machine's status. **Budget
 exhaustion behaves as an interrupt**: it sets the same flag SIGINT sets, so
-the run winds down gracefully, the guards tear the rentals down, and the store
+the search winds down gracefully, the guards tear the rentals down, and the store
 stays resumable. A machine polled `Gone` is **replaced**: its record is
 closed out, a replacement is acquired under its own entry's constraints raised
 to the slots in use, and the transport's destination swaps to it. A replacement
@@ -2692,12 +2700,12 @@ clean degradation under best-effort. A supervisor panic retires every
 transport, so no worker is left blocked on a destination that will never
 swap.
 
-**Journal coverage matches the run window.** The journal is per-run and
+**Journal coverage matches the search window.** The journal is per-search and
 observational, but rental lifecycle extends beyond it: acquisition precedes
-the run's creation, and destruction follows its end. The events cover what
-happens while the run exists — the composition at start, a machine lost, a
+the search's creation, and destruction follows its end. The events cover what
+happens while the search exists — the composition at start, a machine lost, a
 replacement, budget exhaustion — carried through a start hook that
-hands the supervisor the run's emitter when the collector spawns, so rental
+hands the supervisor the search's emitter when the collector spawns, so rental
 events cross the same single-writer boundary as every other event with no
 scheduler edge to the provider. Acquisition intent and final spend live in
 the durable provider records and the ledger, which `sima report --spend`
@@ -2709,7 +2717,7 @@ influence is operational, and results need no cross-checking apparatus. Three
 behaviors are recorded durably per marketplace machine, keyed by the provider's
 stable machine identifier:
 
-- **Lost** — a live machine the supervisor polled `Gone` mid-run.
+- **Lost** — a live machine the supervisor polled `Gone` mid-search.
 - **NeverReady** — a provisioned machine that never reported a usable endpoint
   within the readiness timeout, including one that went `Gone` while
   provisioning. A cancelled wait is a wind-down of ours, never an incident.
@@ -2720,8 +2728,8 @@ A machine with two or more incidents of any kinds is disqualified at offer
 selection. The blacklist is never materialized: the excluded set is derived
 from the incident records at each acquisition, so there is one source of truth.
 The records live beside the instance ledger, keyed by machine and shared by
-every run using the store, so a machine that misbehaved for one run is avoided
-by the next. Both the run-start acquisition and every supervisor
+every search using the store, so a machine that misbehaved for one search is avoided
+by the next. Both the search-start acquisition and every supervisor
 replacement flow through [`acquire`](#the-acquisition-loop), so one derivation
 point covers both. A machine the provider reports no identifier for normalizes
 to an empty machine, which records no incidents and is never excluded.
@@ -2730,12 +2738,12 @@ to an empty machine, which records no incidents and is never excluded.
 
 Everything below this composes to distribute **workers**: the store and the
 orchestrator stay on the operator's machine, and task inputs and results cross
-the wire inline. `sima migrate` moves the **orchestrator**. The run's durable
-state travels to another machine, a `sima run` process drives it there, and the
+the wire inline. `sima migrate` moves the **orchestrator**. The search's durable
+state travels to another machine, a `sima search` process drives it there, and the
 results come back.
 
 ```
-   fleet — workers elsewhere              migrate — the run elsewhere
+   fleet — workers elsewhere              migrate — the search elsewhere
 
  ┌────────────────────────┐              ┌────────────────────────┐
  │ operator's machine     │              │ operator's machine     │
@@ -2756,15 +2764,15 @@ results come back.
                                          │  │ sima-worker × N  │  │
                                          │  └──────────────────┘  │
                                          └────────────────────────┘
-                                            ② run  ③ follow live
+                                            ② search  ③ follow live
 ```
 
-**Why the far side continues this run rather than starting another.** Two
+**Why the far side continues this search rather than starting another.** Two
 identity facts, and the whole capability rests on them:
 
-- **The run id survives the move.** `[run]` is the only hashed section, so a far
+- **The search id survives the move.** `[search]` is the only hashed section, so a far
   side holding a different store path, a different worker layout, and no
-  machines at all is still the same run.
+  machines at all is still the same search.
 - **The environment hash survives the move.** A domain's environment components
   name the executor version and its program digests — no device, no driver, no
   hostname — so two machines running the same backend mint identical
@@ -2788,9 +2796,9 @@ any provider. See [Carrying a registered program](#carrying-a-registered-program
 **The destination is a declared host**, named by `[orchestrator].migrate`. A
 migration adds no section and no key of its own, and the host's own form decides
 what happens: a machine of yours is used as it stands, so nothing is rented and
-nothing torn down; a rented one is acquired for the run and destroyed on every
+nothing torn down; a rented one is acquired for the search and destroyed on every
 exit path. `[fleet]` is not consulted — a migration moves the orchestrator onto
-one machine, and the members a run may draw on are a different question.
+one machine, and the members a search may draw on are a different question.
 
 |  | a machine of yours | a rented machine |
 |---|---|---|
@@ -2800,34 +2808,34 @@ one machine, and the members a run may draw on are a different question.
 | `sima-worker` must be | inside the host's `image` | inside the image |
 | Teardown | nothing to tear down | destroyed on every exit path |
 
-**The far-side directory** is derived from the run id, so a second invocation
-finds it without remembering anything and two runs on one machine never collide:
+**The far-side directory** is derived from the search id, so a second invocation
+finds it without remembering anything and two searches on one machine never collide:
 
 ```
-<host.root>/<64-hex run id>/
+<host.root>/<64-hex search id>/
     sima.toml       the synthesized config
     store/          the far side's store
-    run.log         the far-side `sima run` output
-    run.pid         the far-side `sima run` process id
+    search.log         the far-side `sima search` output
+    search.pid         the far-side `sima search` process id
 ```
 
 It is left in place. On a rented machine it dies with the instance; on a machine
-of yours it is scratch a later migration of the same run reuses, so removing it
+of yours it is scratch a later migration of the same search reuses, so removing it
 would only force the transfer again.
 
 **The far-side config** is the local one with everything about here removed.
-`[run]` travels verbatim as a parsed value, so the run id is preserved by
+`[search]` travels verbatim as a parsed value, so the search id is preserved by
 construction. `[config]` travels with its store path rewritten to `./store`,
 which the load resolves against the config file's own directory — stated
-rather than left to the default, since the far side's run directory is where
+rather than left to the default, since the far side's search directory is where
 that store belongs. The local
 `[orchestrator]` is dropped whole — its worker layout names this machine's
 hardware, and its `migrate` key names a destination the far side must not carry
-onward, since a run that has arrived does not migrate again. Every `[host.*]`,
+onward, since a search that has arrived does not migrate again. Every `[host.*]`,
 `[host_class.*]`, `[fleet]`, and `[budget]` is dropped: they name machines
 reachable from here, which says nothing about what the destination can reach.
 
-A run whose format is routed to a program gains one `[domain.*]` table, written
+A search whose format is routed to a program gains one `[domain.*]` table, written
 rather than copied: the entry point the install leaves, the payload digest to
 install it from, the variable names the local entry declared, and the SDK it
 declared. The names travel alone, since each value is the destination's own, and
@@ -2857,10 +2865,10 @@ The far side's own `[orchestrator]` is rebuilt from the destination's form:
   follow — see [Renting](#renting) — so the two derivations from one enumeration
   agree.
 
-**A migrated run declares no machine beyond itself**, so its `sima run` is
+**A migrated search declares no machine beyond itself**, so its `sima search` is
 invoked without `--fleet` and it rents nothing, whatever the local config
 declared. The reason is the credential: renting needs the provider key, and the
-key never leaves this machine. An operator should expect a run drawing on four
+key never leaves this machine. An operator should expect a search drawing on four
 rented machines while driven from here to execute on the destination alone once
 moved.
 
@@ -2868,21 +2876,21 @@ moved.
 
 ```
  ┌────────────────────────────────────────────────────────────────────────┐
- │  1  open the local store; acquire the run lock, held to the end        │
+ │  1  open the local store; acquire the search lock, held to the end        │
  │  2  destination, by the form the named host takes:                     │
  │       yours    ──▶ that machine; no rental, no teardown                │
- │       rented   ──▶ adopt the rental already hosting this run, or       │
+ │       rented   ──▶ adopt the rental already hosting this search, or       │
  │                      acquire one per the host entry                    │
  │  3  reach it: a machine of yours answers an image check, a rented one  │
  │       answers its enumeration probe                                    │
  │  4  create the far-side directory; write the synthesized config        │
- │  5  already driving this run? yes ──▶ skip to 7                        │
+ │  5  already driving this search? yes ──▶ skip to 7                        │
  │       no ──▶ PUSH: records in full, plus the frontier states           │
- │  6  START: setsid the far `sima run`, capture its pid                  │
+ │  6  START: setsid the far `sima search`, capture its pid                  │
  │  7  FOLLOW: render each record and forward it into the local journal;  │
  │       poll the budget verdict when this is a rental                    │
- │  8  end on: a terminal run event | local interrupt | budget exhaustion │
- │  9  WIND DOWN: signal the far run, wait for it to exit (bounded)       │
+ │  8  end on: a terminal search event | local interrupt | budget exhaustion │
+ │  9  WIND DOWN: signal the far search, wait for it to exit (bounded)       │
  │ 10  PULL: everything the far side's records reference                  │
  │ 11  re-derive the key set; finalize when every key is committed        │
  │ 12  TEARDOWN: release the guard (rental only)                          │
@@ -2891,14 +2899,14 @@ moved.
 
 **Each phase says so as it begins.** Steps 2 through 6 are where a migration
 spends its minutes — an offer walk, a machine booting and pulling an image, a
-closure crossing the wire, a far run loading and installing a program — and
-until step 7 there is no far run producing records, so a terminal that printed
-only the run id would be indistinguishable from a hang. One line opens each:
+closure crossing the wire, a far search loading and installing a program — and
+until step 7 there is no far search producing records, so a terminal that printed
+only the search id would be indistinguishable from a hang. One line opens each:
 what was rented and at what rate, that the machine is being waited for and for
 how long, how many objects are being sent, that the program is being installed,
-and that the far run is being started. A machine of yours is standing and is
+and that the far search is being started. A machine of yours is standing and is
 not paid for, so it has neither of the first two. The lines are journal events
-like any other, so the operator's view and the run's journal state the same
+like any other, so the operator's view and the search's journal state the same
 placement.
 
 The readiness probes behind step 3 capture their own stderr rather than
@@ -2910,30 +2918,30 @@ the terminal nowhere else.
 Push and pull are one `Store::sync` at two moments, differing only in the
 [object scope](#workers-on-another-machine) each side advertises. A push over a
 registered format names the payload's closure — the manifest and every file it
-names — beside the frontier states, so the program crosses with the run it
+names — beside the frontier states, so the program crosses with the search it
 serves. No key list crosses the wire and the protocol is unchanged: the
 initiator derives its key set from (config, store state), the rule the
 scheduler's frontier already follows, and the session converges because
 whichever side holds more also derives more keys and advertises the records the
 other lacks.
 
-The far half of each session is **`sima sync-serve <store> --run <id>`**,
-spawned over the same hop, which takes its own run lock for the session's
-duration. It addresses the store and the run rather than a config, because
+The far half of each session is **`sima sync-serve <store> --search <id>`**,
+spawned over the same hop, which takes its own search lock for the session's
+duration. It addresses the store and the search rather than a config, because
 loading a config resolves its `[domain.*]` entries — which installs and spawns
 the very program the session may be there to deliver. The initiator knows both
-values: it derives the run id locally, and the far store sits in the run's own
-directory. That side therefore derives its key set from **the run's journal**:
+values: it derives the search id locally, and the far store sits in the search's own
+directory. That side therefore derives its key set from **the search's journal**:
 every key a lifecycle event names, which is exactly the set it has state for,
-since a record or a checkpoint exists only for a task the run queued and
+since a record or a checkpoint exists only for a task the search queued and
 queueing is journaled. A store that journaled nothing yields the empty set,
 which is what one about to take its first push holds.
 
 `follow-serve` keeps its config-path form: it serves users through `--on` as
-well as the migration, and it runs only after the far run installed its
+well as the migration, and it runs only after the far search installed its
 program.
 
-**The far run is detached.** It is started with `setsid` and its pid recorded,
+**The far search is detached.** It is started with `setsid` and its pid recorded,
 so once it is started, a laptop that sleeps, a network that drops, a
 `sima migrate` that is killed, and a Ctrl-C all leave the destination computing.
 An interrupt arriving before that point abandons the placement instead: nothing
@@ -2941,17 +2949,17 @@ was started, so there is nothing to leave computing. Re-running reattaches, and
 the two destination kinds reattach by different evidence: a rented machine is
 found in the instance ledger and adopted, which is what stops a second
 invocation renting a second machine; a machine of yours has no ledger record, so
-`run.pid` naming a live process is the whole of it. The `run.pid` check applies to a
-rental too — adopting the machine says nothing about whether the run on it is
+`search.pid` naming a live process is the whole of it. The `search.pid` check applies to a
+rental too — adopting the machine says nothing about whether the search on it is
 still going. Either way the push and the start are skipped.
 
 #### Attaching, detaching, and winding down
 
-A migrated run has three states, and an operator moves between them by name:
+A migrated search has three states, and an operator moves between them by name:
 
 ```
                        ┌──────────────────────────────────────────┐
-                       │            far run computing             │
+                       │            far search computing             │
                        └──────────────────────────────────────────┘
                          ▲          │                  ▲      │
            start/reattach│          │ terminal event   │      │ kill -INT
@@ -2967,27 +2975,27 @@ A migrated run has three states, and an operator moves between them by name:
 ```
 
 **Every exit path from an attached migration lands in the same passive state.**
-Ctrl-C, `SIGHUP`, `SIGTERM`, a closed terminal, a crash: the far run keeps
+Ctrl-C, `SIGHUP`, `SIGTERM`, a closed terminal, a crash: the far search keeps
 computing, the rental stays standing, and nothing is pulled. Only `SIGINT` is
-handled, and what it does is print where the run is and how to come back; the
+handled, and what it does is print where the search is and how to come back; the
 rest are unhandled, so the default death has the same effect. A migration
 interrupted this way exits 0, because detaching is what was asked for.
 
 **An interrupt before the start abandons the placement.** Reaching a machine,
-writing a config on it, and sending it the run's store take minutes, and a
+writing a config on it, and sending it the search's store take minutes, and a
 `SIGINT` inside that window is read as it is during the acquisition: the
-migration stops where it is, no far run is started, a rental taken for the
+migration stops where it is, no far search is started, a rental taken for the
 placement is released by the same teardown any placement failure runs through,
-and the run is left as it was. The verb exits 130 and states that nothing was
+and the search is left as it was. The verb exits 130 and states that nothing was
 started, which separates it from a detach — the two are told apart by whether
-there is a far run, and the start is what makes one.
+there is a far search, and the start is what makes one.
 
 **A stream that ends with the operator is the detach, not a fault.** The
 transport carrying the follow is a child of the migration, and it leads a
 group of its own precisely so a terminal's Ctrl-C does not end it — but a
 detach is also what an operator asks for while the connection is failing on
 its own. Once the interrupt is raised, a follow whose stream ends carries the
-outcome the interrupt already decided: the far run is left computing, the two
+outcome the interrupt already decided: the far search is left computing, the two
 ways back are printed, and the exit is 0. Before the interrupt, the same
 ending is a fault and is reported as one, naming the destination.
 
@@ -2997,19 +3005,19 @@ its own, which an interrupt here neither caused nor answers, so it fails the
 migration in its own words whether or not the flag is raised.
 
 **The destructive act has its own verb.** `sima recall <config>` is the inverse
-of `sima migrate`: it contacts the destination, winds a far run down if one is
-driving, reads what that run ended as, pulls what it produced, settles the run
+of `sima migrate`: it contacts the destination, winds a far search down if one is
+driving, reads what that search ended as, pulls what it produced, settles the search
 over the store that came home, and destroys the rental. It places nothing,
 pushes nothing, and starts nothing, so a destination that was never migrated to
 is refused by name rather than created. Adoption is its only way onto a rented
 machine — a recall never rents — and a rental already gone leaves nothing to
-contact, which settles the run over what the local store holds.
+contact, which settles the search over what the local store holds.
 
 **A recall reads the far journal, and a definitive failure comes home as one.**
-Journals do not sync and a recall follows nothing, so a far run that failed
-definitively would otherwise come home as a run with tasks still to do. The read
+Journals do not sync and a recall follows nothing, so a far search that failed
+definitively would otherwise come home as a search with tasks still to do. The read
 is one `sima follow-serve --once` against the destination, taken once the far
-run is quiet so what it holds is final. So the outcomes of a recall are the
+search is quiet so what it holds is final. So the outcomes of a recall are the
 outcomes of a migration: finalized, outstanding, wound down, or failed by task
 and reason.
 
@@ -3020,52 +3028,52 @@ That probe alone answers that there is nothing to read, and the recall then
 settles over the store the pull brought home. Every fault of the read itself
 fails the recall, naming the machine and the journal read and carrying the far
 side's own words: a far side that holds a journal and could not serve it said
-nothing about how its run ended, and reading that as an empty journal would
-bring a run that cannot complete home as resumable.
+nothing about how its search ended, and reading that as an empty journal would
+bring a search that cannot complete home as resumable.
 
-**The invariant that is repealed.** A far run no longer ends with the migration
-that started it. What replaces it: **the far run outlives everything except a
+**The invariant that is repealed.** A far search no longer ends with the migration
+that started it. What replaces it: **the far search outlives everything except a
 terminal event, its own wall-clock ceiling where it has one, and `sima
 recall`.**
 
-**Stopping a rented run early saves nothing.** A rental bills by the hour rather
+**Stopping a rented search early saves nothing.** A rental bills by the hour rather
 than by use, so the bill is identical whether the machine computes or idles. And
-a far run cannot end the bill: destroying an instance is a provider-API call and
+a far search cannot end the bill: destroying an instance is a provider-API call and
 the provider key never travels, so after a detach the instance bills until the
 key acts, through `sima recall` in the normal course or `sima reconcile` as the
 safety net for orphans. That billing tail is inherent to the key staying home
-and applies even to a far run that finished well. What follows from it is that
+and applies even to a far search that finished well. What follows from it is that
 a stopped-but-billing machine is strictly the worst of the states available: it
 costs what a computing one costs and returns nothing.
 
 **A wall-clock ceiling is kept where no bill runs against the time.** `[budget]
-max_wall_clock_ms` is the run's own deadline, measured from the start of each
+max_wall_clock_ms` is the search's own deadline, measured from the start of each
 execution, and it raises the same flag `SIGINT` raises — so what follows is the
 wind-down that already exists, and the journal carries a `Diagnostic` naming the
 ceiling. A value of `0` states no ceiling, exactly as omitting the key does.
 
-The ceiling is worth something on a plain local run and on a machine of yours,
+The ceiling is worth something on a plain local search and on a machine of yours,
 so it is kept on both, and the far config a migration onto a machine of yours
 synthesizes carries the key. It is worth nothing on a rented destination, by the
-paragraph above, so the key stays home and a detached rented run computes until
+paragraph above, so the key stays home and a detached rented search computes until
 a recall ends it. `max_spend_usd` travels nowhere at all, for the same reason
 the ceiling cannot tear a machine down, and stays assessed by whatever is
-attached. Each far session measures from its own start, so a restarted far run
+attached. Each far session measures from its own start, so a restarted far search
 gets a fresh ceiling: the ceiling bounds unattended computing per launch.
 
-**Signalling a detached run.** A shell starts an asynchronous command with
-`SIGINT` set to ignored, and the disposition survives the exec, so the far run
-becomes signallable only once `sima run` installs its own handler over it —
+**Signalling a detached search.** A shell starts an asynchronous command with
+`SIGINT` set to ignored, and the disposition survives the exec, so the far search
+becomes signallable only once `sima search` installs its own handler over it —
 which is after it has loaded its config. A wind-down that begins inside that
 window would signal into nothing. The wait therefore re-sends the signal on
-every poll, which is idempotent against a run already winding down. A reader
+every poll, which is idempotent against a search already winding down. A reader
 replacing the signal library, or moving the far start off a shell, needs this.
 
 **What reconciliation must not destroy.** Reconciliation destroys a rented
-machine whose owning run does not hold its lock here, and a detached migration
+machine whose owning search does not hold its lock here, and a detached migration
 whose local process died has exactly that shape. The ledger therefore records
 what a rental is *for*: `Worker` for machines the local orchestrator drives,
-`Orchestrator` for the machine hosting the run itself. The role is written at
+`Orchestrator` for the machine hosting the search itself. The role is written at
 intent, so no window exists in which a hosting rental is recorded as an ordinary
 one. A pass spares `Orchestrator` records by default and destroys them when the
 operator asks, which `sima reconcile <config> --hosted` does. Adoption
@@ -3082,57 +3090,57 @@ after a migration.
 A feed's first poll is the journal as it already stood when the follow opened,
 and what that is depends on when it opened:
 
-- **A migration that starts the far run opens the follow first.** Its first poll
-  is then an earlier session's journal, exactly — a run that once finished on
+- **A migration that starts the far search opens the follow first.** Its first poll
+  is then an earlier session's journal, exactly — a search that once finished on
   this destination leaves one ending in that finalization. Those records are
-  neither forwarded a second time nor allowed to decide this run's outcome.
-- **A reattach opens the follow on a run already going**, so its first poll is
-  that run's own history: it decides the state and is not re-emitted, having
+  neither forwarded a second time nor allowed to decide this search's outcome.
+- **A reattach opens the follow on a search already going**, so its first poll is
+  that search's own history: it decides the state and is not re-emitted, having
   been produced while nothing was attached to journal it. The reattaching
   migration therefore loses those records from the local journal.
 - **A destination whose journal is empty cannot be followed at all** until the
-  run writes its first line, so the follow opens after the start and its first
-  poll is this run's.
+  search writes its first line, so the follow opens after the start and its first
+  poll is this search's.
 
 Journals are observational and excluded from every identity criterion, so what
-is lost is diagnostic detail; the records, the manifest, and the run's identity
+is lost is diagnostic detail; the records, the manifest, and the search's identity
 are unaffected.
 
-**A far run that dies before journaling states its own last words.** Every
+**A far search that dies before journaling states its own last words.** Every
 far-side load failure looks alike from here — a program that cannot answer for
 its format, an install script that exited non-zero, a binding guard that refused
-a changed program, a store that will not open — because the far `sima run` dies
+a changed program, a store that will not open — because the far `sima search` dies
 before it journals anything of its own. Two shapes reach the same report:
 
 - **Nothing to follow.** Over an empty far journal the follow is refused
-  outright, and the refusal says only that there is no run to follow. A far
+  outright, and the refusal says only that there is no search to follow. A far
   process that is gone is asked once more before that refusal is read as a
-  death: a run short enough to finish inside the attach window is gone too, and
+  death: a search short enough to finish inside the attach window is gone too, and
   the journal it left is what separates the two.
 - **A journal an earlier session left.** The follow opens on it and replays a
-  finalization that is not this run's. Opening the follow before the start is
+  finalization that is not this search's. Opening the follow before the start is
   what tells the two apart: nothing arriving after that first poll, over a far
-  process that is gone, is a run that journaled nothing.
+  process that is gone, is a search that journaled nothing.
 
-Either way the last lines of the far run's log are read over the shell channel
+Either way the last lines of the far search's log are read over the shell channel
 every other far-side operation uses and reported with the machine's name. A far
-run that is up and simply has not journaled yet is a different thing: the follow
+search that is up and simply has not journaled yet is a different thing: the follow
 waits it out under its own bound and, if that runs out, reports the refusal
 unchanged.
 
-### Run status
+### Search status
 
-`status` computes a run's observable state from its journal alone. The
+`status` computes a search's observable state from its journal alone. The
 counters — tasks, committed, retried, rejected, faulted, lease expiries,
 checkpoint degradations —
-sum across every resume segment, and the last run-level event decides the
-state. A journal ending mid-run reads as in progress: a dead orchestrator
+sum across every resume segment, and the last search-level event decides the
+state. A journal ending mid-search reads as in progress: a dead orchestrator
 is indistinguishable from a live one by the journal alone.
 
-Every read-only query is a fold over records: one half reads a run's journal,
+Every read-only query is a fold over records: one half reads a search's journal,
 the other projects the view. The two are separate functions, so the same fold
 serves records read from a local store and records streamed from the host that
-drives the run. Stats render generically from the scalars each outcome event
+drives the search. Stats render generically from the scalars each outcome event
 carries — `name=value` pairs joined by a space, with a trailing `blob=<len>B`
 when the family blob is non-empty — so the fold needs no domain and no format
 id to render them.
@@ -3142,43 +3150,43 @@ id to render them.
 The CLI holds no orchestration logic — parsing, rendering, signal
 registration, exit codes, and, for `tui`, an interactive terminal
 frontend over the observer boundary. The read-only commands additionally take
-`--on <ssh-dest>`, which addresses a run on the host its orchestrator runs on;
+`--on <ssh-dest>`, which addresses a search on the host its orchestrator runs on;
 the flag is split out of the arguments before the command match, so every
 command form keeps its shape whether or not a host is named:
 
-- **`sima run <config.toml>`** — drives the configured run, printing one
+- **`sima search <config.toml>`** — drives the configured search, printing one
   plain line per meaningful event from the observer boundary. SIGINT sets the
   interrupt flag for a graceful wind-down; a second SIGINT falls through
   to default death, which is exactly the crash the recovery guarantees
   cover. One SIGINT suffices while a fleet is still being acquired: it
   [abandons the acquisition](#renting), releases the machines it had, and exits
-  `130`. A run over a store that already holds progress opens with the ledger
+  `130`. A search over a store that already holds progress opens with the ledger
   it resumes — `resuming: 4/6 committed, 2 outstanding` — rather than a task
   count, and its commit counter continues that ledger, so continuing and
-  restarting never read alike. The figures are the run's own `RunStarted`,
+  restarting never read alike. The figures are the search's own `SearchStarted`,
   counted from the store's records, so a migration's follow states the same
-  ledger the far run does.
-- **`--quiet`** — taken by the three verbs that render a run's stream (`run`,
+  ledger the far search does.
+- **`--quiet`** — taken by the three verbs that render a search's stream (`search`,
   `migrate`, `recall`) and split out of the arguments before the command
   match, as `--accept-binary` is, so it composes with the other flags in
-  either order. It narrows the stream to the run's own progress — the run id,
+  either order. It narrows the stream to the search's own progress — the search id,
   its start, its commits, its ending — and anything gone wrong. What it drops
-  says where a placement has got to: the phases of putting a run on machines,
+  says where a placement has got to: the phases of putting a search on machines,
   and a rented machine coming online. It is a rendering choice and nothing
-  more: every line it drops is still journaled, so a quiet run's journal is a
+  more: every line it drops is still journaled, so a quiet search's journal is a
   loud one's.
-- **`sima migrate <config.toml>`** — moves the run onto the machine
+- **`sima migrate <config.toml>`** — moves the search onto the machine
   `[orchestrator].migrate` names, follows it there through the same renderer
-  `run` uses, and brings the results home; see
-  [Migration](#migration). It takes no destination argument, since where a run
+  `search` uses, and brings the results home; see
+  [Migration](#migration). It takes no destination argument, since where a search
   executes belongs in the file that describes it, and no `--on`, since it drives
-  a run rather than observing one. SIGINT once the far run is started detaches:
-  the far run keeps computing, the line it prints names the machine and both
+  a search rather than observing one. SIGINT once the far search is started detaches:
+  the far search keeps computing, the line it prints names the machine and both
   ways back, and it exits 0. SIGINT before that abandons the placement: nothing
   is started, a rental taken for it is released, and it exits 130.
-- **`sima recall <config.toml>`** — the inverse: winds the far run down, reads
-  what it ended as, pulls what it committed, settles the run, and destroys any
-  rental. A far run that failed definitively is reported by task and reason and
+- **`sima recall <config.toml>`** — the inverse: winds the far search down, reads
+  what it ended as, pulls what it committed, settles the search, and destroys any
+  rental. A far search that failed definitively is reported by task and reason and
   exits 2, as an attached migration reports one; a far journal that is there and
   cannot be read fails the recall by name rather than passing for an empty one.
   It starts
@@ -3188,7 +3196,7 @@ command form keeps its shape whether or not a host is named:
 - **`sima reconcile <config.toml>`** — destroys the machines the config's
   store still holds instance records for, and prints how many machines it
   destroyed and how many records it cleared. `--hosted` includes the machines
-  hosting a migrated run's orchestrator, which a pass spares by default because
+  hosting a migrated search's orchestrator, which a pass spares by default because
   a detached migration is indistinguishable from an abandoned rental by the lock
   alone. The instance ledger decides
   which providers it touches: each distinct provider id its records name
@@ -3197,22 +3205,22 @@ command form keeps its shape whether or not a host is named:
   backend answers to is an error naming it.
 - **`sima status <config.toml>`** — reports execution. The config file is
   the one argument: its execution section names the store and its identity
-  section derives the run id. `--task <key>` prints one task's attempt
+  section derives the search id. `--task <key>` prints one task's attempt
   timeline instead — every lease it took, the worker, device and host that
   ran it, how each attempt ended, and the span the collector observed over
   it. `--failed` digests the tasks that did not commit, naming the terminal
   outcome and reason of each.
 - **`sima report <config.toml>`** — reports results, efficiency, and cost
   through mutually-exclusive view flags; a combination is a usage error. The
-  result and efficiency views read the run's journal; the cost view reads the
+  result and efficiency views read the search's journal; the cost view reads the
   store:
 
   - The default groups each committed task's rendered stats line by distinct
     value with a count; `--all` prints one line per committed task instead,
     and `--task <key>` one task's line. A task that never committed has no
     report; its execution history is what `status --task` answers.
-  - `--timeline` reports how efficiently the run executed. A summary block
-    carries the run's wall-clock, commit count, and throughput; three retry
+  - `--timeline` reports how efficiently the search executed. A summary block
+    carries the search's wall-clock, commit count, and throughput; three retry
     ratios state retry volume, prevalence, and the share of attempts that were
     wasted, each printed with the counts it is taken over; and a per-worker
     table names each worker's spawn latency, respawns, utilization, commits,
@@ -3220,13 +3228,13 @@ command form keeps its shape whether or not a host is named:
     one occupancy bar per worker on a single axis, so a worker provisioned late
     shows its spawn gap as leading blanks drawn to scale.
 
-    Rates and per-worker figures cover the **latest run session** — a resumed
-    run's journal spans downtime that would collapse them — while the commit
-    count is run-wide. Utilization is over each worker's **own lifespan**, from
+    Rates and per-worker figures cover the **latest search session** — a resumed
+    search's journal spans downtime that would collapse them — while the commit
+    count is search-wide. Utilization is over each worker's **own lifespan**, from
     its first binding to the session's end, so the cost of provisioning a pool
     on another machine reads as spawn latency rather than as idleness. Every
     duration is elapsed wall-clock as the journal stamped it.
-  - `--spend` reports the run's rental spend from the local store's ledger:
+  - `--spend` reports the search's rental spend from the local store's ledger:
     each closed rental with its duration, rate, and cost, each rental still
     open with what it has accrued, and the total, all in dollars. The ledger is
     store state the orchestrator writes and the follow feed carries journal
@@ -3236,66 +3244,66 @@ command form keeps its shape whether or not a host is named:
     one line per machine with a recorded incident, its counts by kind, and
     whether it is blacklisted, with an explicit line when the store holds none.
     Like `--spend` it reads store state the follow feed does not carry, so it is
-    local-only and takes no `--on`. It is store-scoped rather than run-scoped,
-    since one machine's reputation is shared by every run using the store.
+    local-only and takes no `--on`. It is store-scoped rather than search-scoped,
+    since one machine's reputation is shared by every search using the store.
 
-`status` and `report` split along what they report — how the run is running
+`status` and `report` split along what they report — how the search is running
 against what it produced, how efficiently it got there, and what it cost.
-Both cover the whole run by default; `status --task <key>` and
+Both cover the whole search by default; `status --task <key>` and
 `report --task <key>` narrow to one task, while `report --timeline` is
-run-scoped, since efficiency is a property of the pool rather than of a task. A
+search-scoped, since efficiency is a property of the pool rather than of a task. A
 `<key>` is any prefix of a task key that names exactly one of the tasks the
 journal carries a lifecycle event for; a prefix matching none, or more than
 one, is an error. Every journal-derived query reads the journal alone and never
-perturbs a run, so it answers over a live run, a finished one, and a failed one
-alike, and a query exits 0 whenever it answered — independently of the run's
+perturbs a search, so it answers over a live search, a finished one, and a failed one
+alike, and a query exits 0 whenever it answered — independently of the search's
 own outcome.
-- **`sima follow <config.toml>`** — streams the run's events to stdout, one
+- **`sima follow <config.toml>`** — streams the search's events to stdout, one
   line per event through the same renderer the tui's log uses, and exits when
-  the run reaches a terminal state, carrying that outcome's exit code. It is
+  the search reaches a terminal state, carrying that outcome's exit code. It is
   the pipeable counterpart of `tui`: no terminal, no raw mode, no keys. A
-  finished run prints what it recorded and leaves; a run nobody drives prints
-  its history and leaves successfully, since such a run is resumable and
+  finished search prints what it recorded and leaves; a search nobody drives prints
+  its history and leaves successfully, since such a search is resumable and
   `status` is where that state is read.
-- **`sima tui <config.toml>`** — drives the same run inside a full-screen
+- **`sima tui <config.toml>`** — drives the same search inside a full-screen
   terminal UI: an idle screen lists the configured workers, a keypress
-  starts the run, and the tui applies each observer event as it arrives, so
-  the worker rows and counters update live, with keys to wind the run down
+  starts the search, and the tui applies each observer event as it arrives, so
+  the worker rows and counters update live, with keys to wind the search down
   gracefully or leave and a `?` overlay listing every binding.
   It requires a terminal; with stdout not a TTY it exits 1. `ratatui`
   and its `crossterm` backend are the terminal-UI dependencies, and they
   enter the workspace at this layer alone.
 
-### Following a run over SSH
+### Following a search over SSH
 
 `status`, `report`, `tui`, and `follow` each accept `--on <ssh-dest>`, which
-names the host the run's orchestrator runs on. `report --spend` and
+names the host the search's orchestrator runs on. `report --spend` and
 `report --machines` are the read views that do not: they read local store state
 the follow feed does not carry. Three properties of the system decide the shape,
 and none of them is a choice:
 
-- **A run's identity is the hash of its config**, and its store path resolves
+- **A search's identity is the hash of its config**, and its store path resolves
   relative to the config file's directory. A local copy of the config would
   resolve the store to a path that does not exist here.
 - **A journal lives with its orchestrator.** It is observational and never
-  travels in a store sync, so following a run means reading that file, on that
+  travels in a store sync, so following a search means reading that file, on that
   machine.
 - **Liveness is an advisory lock**, meaningful only to the kernel holding it.
   Probed across a network filesystem it does not reflect the real holder.
 
 So the config path travels unresolved and the far side interprets it. `sima
 follow-serve <config> [--once]`, spawned there over
-`ssh -o BatchMode=yes`, computes the identical run id, resolves its own store,
+`ssh -o BatchMode=yes`, computes the identical search id, resolves its own store,
 tails its own journal, and probes its own kernel lock, writing frames to
 stdout; this side folds and renders them. `follow-serve` is the far half of a
 transport rather than a verb a user invokes, so it stays out of the usage
 text, and its stdout carries frames alone — every diagnostic goes to stderr,
 which ssh keeps on its own channel.
 
-**One boundary, two implementations.** Every live view consumes a `RunFeed`: the
-records a run gains, its lock holder, and the `FeedInfo` a renderer needs but
-cannot derive from records — the run id, the format whose domain renders
-stats, and the worker count. `LocalFeed` pairs a `RunObserver` with the
+**One boundary, two implementations.** Every live view consumes a `SearchFeed`: the
+records a search gains, its lock holder, and the `FeedInfo` a renderer needs but
+cannot derive from records — the search id, the format whose domain renders
+stats, and the worker count. `LocalFeed` pairs a `SearchObserver` with the
 metadata its loaded config carries; `RemoteFeed` reads them off the stream.
 The one-shot views take the same records in one call and fold them the same
 way, so a remote view renders byte for byte what the local view renders.
@@ -3313,10 +3321,10 @@ carrying the text that machine rendered, and surfaces here unchanged: the
 machine that failed owns the classification.
 
 **Observation is read-only, and remote observation is observe-only.** The far
-side takes no lock and writes nothing to the store, so a followed run reaches
-a manifest byte-identical to an unobserved one. A run is driven where its
+side takes no lock and writes nothing to the store, so a followed search reaches
+a manifest byte-identical to an unobserved one. A search is driven where its
 hardware is, so `tui --on <host>` never offers the take-over affordance, and
-`run` and `rm` — which drive and mutate — take no `--on` at all.
+`search` and `rm` — which drive and mutate — take no `--on` at all.
 
 Authentication is the user's SSH configuration. Keys, agents, `~/.ssh/config`
 aliases, and jump hosts are configured exactly as for remote worker pools;
@@ -3325,10 +3333,10 @@ unreachable, or that would ask for a password, fails promptly with a named
 cause. A host that authenticates and then stalls before its first frame is a
 live connection, and the near side waits on it.
 
-Exit codes (shared across `run`, `migrate`, `recall`, `tui`, and `follow`):
+Exit codes (shared across `search`, `migrate`, `recall`, `tui`, and `follow`):
 
-- **0** — the run finalized, `status` answered, `follow` reached the end of
-  a run nobody is driving, which is resumable rather than failed, or a migration
+- **0** — the search finalized, `status` answered, `follow` reached the end of
+  a search nobody is driving, which is resumable rather than failed, or a migration
   detached, which is what was asked of it;
 - **2** — a definitive candidate failure;
 - **130** — interrupted, store resumable;
@@ -3338,8 +3346,8 @@ Exit codes (shared across `run`, `migrate`, `recall`, `tui`, and `follow`):
 ## Determinism proof obligations
 
 Anything claimed deterministic is proven by test: same config in two fresh
-stores → byte-identical manifests; a run killed at any crashpoint and
-resumed → manifest identical to an uninterrupted run (crash-injection
+stores → byte-identical manifests; a search killed at any crashpoint and
+resumed → manifest identical to an uninterrupted search (crash-injection
 harness); re-evaluation touches no executor; a copied store resumes
 with an identical manifest.
 

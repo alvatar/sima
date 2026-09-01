@@ -29,7 +29,7 @@ use crate::link::{LinkEvent, SpawnOutcome, WorkerLink, WorkerTransport};
 use crate::protocol::{Assignment, Hello, PROTOCOL_VERSION, ToChild, ToParent, encode_assign};
 use crate::spawn_settings::SpawnSettings;
 
-/// Spawns worker processes for one search: the command vector to search — a program
+/// Spawns worker processes for one search: the command vector to run — a program
 /// and its arguments — plus the settings every child of this pool is spawned
 /// and greeted under.
 ///
@@ -66,7 +66,7 @@ impl WorkerTransport for SubprocessTransport {
         device: Option<&DeviceBinding>,
         events: Emitter,
     ) -> Result<SpawnOutcome> {
-        // The subprocess transport searches on this machine, so its diagnostics
+        // The subprocess transport runs on this machine, so its diagnostics
         // carry the local pool's empty host label.
         let context = EventContext {
             events,
@@ -96,10 +96,10 @@ pub(crate) struct EventContext {
 }
 
 /// Spawns `program args...` as a worker child under `settings`, pipes its
-/// stdio, searches the reader thread, and performs the handshake bound to
+/// stdio, runs the reader thread, and performs the handshake bound to
 /// `device`. The returned link owns the child and the scratch directory an
 /// explicit policy gave it; a handshake failure kills and reaps it before the
-/// error returns. Shared by every transport that searches a worker over a local
+/// error returns. Shared by every transport that runs a worker over a local
 /// process — a bare `sima-worker` or a container client wrapping one.
 pub(crate) fn spawn_worker(
     program: &Path,
@@ -200,14 +200,14 @@ fn handshake(
 }
 
 /// What a peer answered at the handshake: where it computes, and which program
-/// it searches.
+/// it runs.
 #[derive(Debug)]
 pub(crate) struct Answer {
     /// The device the peer opened, empty for a domain that uses no device.
     pub(crate) device_name: String,
     /// The driver version of that device, empty alongside an empty name.
     pub(crate) driver: String,
-    /// The digest of the program the peer searches, empty when none travelled to
+    /// The digest of the program the peer runs, empty when none travelled to
     /// it. Agreed with the search's own before this value is handed back.
     pub(crate) program: String,
 }
@@ -759,7 +759,7 @@ mod tests {
     }
 
     #[test]
-    fn the_digest_the_run_sent_answered_back_proceeds() {
+    fn the_digest_the_search_sent_answered_back_proceeds() {
         let answer = agreement(Some(SENT), SENT).expect("the agreement holds");
         assert_eq!(
             answer.program, SENT,
@@ -768,7 +768,7 @@ mod tests {
     }
 
     #[test]
-    fn another_digest_than_the_run_sent_is_refused_naming_both() {
+    fn another_digest_than_the_search_sent_is_refused_naming_both() {
         // The drifted machine: it holds a program, and it is not the one this
         // search sent. Naming both sides is what makes the difference actionable.
         let message = refusal(Some(SENT), ANSWERED);
@@ -784,7 +784,7 @@ mod tests {
     }
 
     #[test]
-    fn no_digest_where_the_run_sent_one_is_refused_as_a_program_that_never_arrived() {
+    fn no_digest_where_the_search_sent_one_is_refused_as_a_program_that_never_arrived() {
         // A worker answering none under a search that sent a program is not a
         // drifted install: nothing was installed there at all.
         let message = refusal(Some(SENT), "");
@@ -795,12 +795,12 @@ mod tests {
         );
         assert!(
             message.contains("never received the program"),
-            "states which way the disagreement searches: {message}"
+            "states which way the disagreement runs: {message}"
         );
     }
 
     #[test]
-    fn a_digest_where_the_run_sent_none_is_refused() {
+    fn a_digest_where_the_search_sent_none_is_refused() {
         // The symmetric direction: a search answering for its format in process
         // sent no program, so a worker that names one is not the worker this
         // search spawned.

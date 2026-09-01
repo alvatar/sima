@@ -6,7 +6,7 @@
 //! a boot is minutes, and the same minutes for each of them — with only the
 //! offer take serialized. What a partial acquisition means is the entry's own
 //! declaration: strict fails the search and tears down what came up, best-effort
-//! searches on whatever did.
+//! runs on whatever did.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, PoisonError};
@@ -77,7 +77,7 @@ pub(crate) fn endpoint_target(endpoint: SshEndpoint) -> SshDestination {
 /// stays small; a machine that fails twice across searches is blacklisted by
 /// its incidents and stops being offered at all.
 ///
-/// Each attempt searches under one `ready_timeout` covering everything it waits
+/// Each attempt runs under one `ready_timeout` covering everything it waits
 /// for, so this is what the worst case multiplies: `PROBE_ACQUIRE_ATTEMPTS`
 /// machines at one `ready_timeout` each, however many offers a walk tries
 /// inside one of them.
@@ -87,7 +87,7 @@ const PROBE_ACQUIRE_ATTEMPTS: usize = 4;
 /// its pool spawns workers through, and the worker slots its probe derived (one
 /// per enumerated GPU, or one deviceless slot when it reports none).
 pub(crate) struct RentedHost<'a> {
-    /// Ownership of the rented machine; its teardown searches on release or drop.
+    /// Ownership of the rented machine; its teardown runs on release or drop.
     /// Behind a lock and an `Option` so the supervisor can swap in a
     /// replacement without disturbing the pool's shared borrow of the
     /// transport; `None` once the guard has been released or the machine has
@@ -232,7 +232,7 @@ pub(crate) fn acquire_hosts<'a>(
         // Strict: the declared count or nothing. Dropping `hosts` here tears
         // down every machine that did come up.
         FillPolicy::Strict if !short.is_empty() => Err(first_error(short)),
-        // Best-effort: search with what came up, so long as one machine did. The
+        // Best-effort: run with what came up, so long as one machine did. The
         // verdict is taken here, at the join, and it is what keeps the entry
         // from paying a market that is not filling it: with every member asked
         // for at once there is no first shortfall left to stop asking after.
@@ -287,7 +287,7 @@ fn acquire_one<'a>(
     for _ in 0..PROBE_ACQUIRE_ATTEMPTS {
         // The clock on this machine starts where it is first asked for, and
         // both stages that wait for it — reporting ready, then answering a
-        // probe — search under the one deadline. Each attempt reaches a different
+        // probe — run under the one deadline. Each attempt reaches a different
         // machine, so each gets a whole budget and none gets two.
         let usable_by = Instant::now() + spec.ready_timeout;
         let limits = AcquireLimits {
@@ -373,7 +373,7 @@ fn acquire_one<'a>(
                 continue;
             }
         };
-        // What the machine's workers search there, and what they answer for. The
+        // What the machine's workers run there, and what they answer for. The
         // ssh client is sima's own process, so it keeps the ambient
         // environment: it reads its agent socket and client configuration from
         // it, and what the far side sees is stated on the far side.
@@ -714,7 +714,7 @@ mod tests {
             never_cancelled(),
             &unheard(),
         )?;
-        assert_eq!(hosts.len(), 1, "best-effort searches on what came up");
+        assert_eq!(hosts.len(), 1, "best-effort runs on what came up");
         assert!(
             provider.destroyed().is_empty(),
             "still running before release"
@@ -746,7 +746,7 @@ mod tests {
     }
 
     #[test]
-    fn a_strict_shortfall_names_the_member_and_says_the_run_stops() -> Result<()> {
+    fn a_strict_shortfall_names_the_member_and_says_the_search_stops() -> Result<()> {
         // One offer for two machines: the member that could not be brought up
         // is named, with what the entry's fill policy makes of it. A fleet one
         // machine short is otherwise invisible until the search's rate looks
@@ -790,7 +790,7 @@ mod tests {
     }
 
     #[test]
-    fn a_best_effort_shortfall_names_the_member_and_says_the_run_goes_on() -> Result<()> {
+    fn a_best_effort_shortfall_names_the_member_and_says_the_search_goes_on() -> Result<()> {
         let (_dir, store, search) = acquisition_env();
         let lock = store.acquire_search_lock(&search)?;
         let provider = StubProvider::new(vec![offer("a", 100_000)]);
@@ -1029,7 +1029,7 @@ mod tests {
 
     #[test]
     fn a_probe_failure_tears_the_machine_down() -> Result<()> {
-        // The machine acquires but its probe never searches: it is torn down rather
+        // The machine acquires but its probe never runs: it is torn down rather
         // than left running with no slots.
         let (_dir, store, search) = acquisition_env();
         let lock = store.acquire_search_lock(&search)?;
@@ -1053,7 +1053,7 @@ mod tests {
         assert_eq!(provider.destroyed().len(), 1, "the machine is torn down");
         // The market held one machine, so the retry has nowhere to go.
         assert!(provider.live().is_empty());
-        // A machine that reported ready but failed the probe cannot search work:
+        // A machine that reported ready but failed the probe cannot run work:
         // one ProbeFailed incident against it.
         let incidents = store.machine_incidents()?;
         assert_eq!(incidents.len(), 1);
@@ -1199,7 +1199,7 @@ mod tests {
     /// Both conditions are read, because either alone leaves the acquisition
     /// holding something the test cannot name. A `Renting` line is emitted once
     /// a machine is provisioned, so one per member is what says every member's
-    /// machine is taken and paid for; the marker, which a probe search as a local
+    /// machine is taken and paid for; the marker, which a probe runs as a local
     /// command touches, is what says one of them got through its boot wait. A
     /// flag set off the marker alone lands while a slower member is still at
     /// the admission gate, and that member then rents nothing at all.
@@ -1303,7 +1303,7 @@ mod tests {
         // during the second. Machines already rented are the whole cost of
         // stopping here, so they are released, and the line that says so is
         // the search's last word — no shortfall is reported, because nothing fell
-        // short. Both fill policies answer alike: best-effort searches on what came
+        // short. Both fill policies answer alike: best-effort runs on what came
         // up when the market fell short, and this is not the market.
         for fill in [FillPolicy::Strict, FillPolicy::BestEffort] {
             abandons_under(fill)?;

@@ -9,13 +9,13 @@
 //! Selection splits in two: hard [`Constraints`] disqualify offers, and one
 //! scalar [`Objective`] ranks whatever qualifies.
 //!
-//! A rented machine is money spent for as long as it searches, so teardown is
+//! A rented machine is money spent for as long as it runs, so teardown is
 //! guaranteed on three levels. [`InstanceGuard`] destroys the instance
 //! whenever it goes out of scope, covering success, failure, panic unwind,
 //! and the graceful wind-down an interrupt triggers. Behind it, every
 //! attempt writes a ledger record in the store before the provider is
 //! called, so a process killed outright still leaves the machine
-//! discoverable — and `reconcile`, which searches at the start of every
+//! discoverable — and `reconcile`, which runs at the start of every
 //! acquisition, destroys what an earlier process left behind.
 //!
 //! What those machines cost is counted the same way: every rental that ends

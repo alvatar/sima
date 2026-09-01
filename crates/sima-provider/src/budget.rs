@@ -64,7 +64,7 @@ pub enum Verdict {
     Within {
         /// What the search has spent so far.
         accrued: Cost,
-        /// When the rental phase searches out, once a wall-clock limit is set
+        /// When the rental phase runs out, once a wall-clock limit is set
         /// and a first rental anchors it.
         deadline_ms: Option<u64>,
     },
@@ -184,7 +184,7 @@ pub fn assess(store: &Store, owner: &SearchId, budget: &Budget, now_ms: u64) -> 
     })
 }
 
-/// When the rental phase searches out: the search's earliest rental plus the
+/// When the rental phase runs out: the search's earliest rental plus the
 /// wall-clock limit. Absent while either the limit or the first rental is.
 ///
 /// The addition saturates, so a limit longer than the clock can express
@@ -347,7 +347,7 @@ mod tests {
     }
 
     #[test]
-    fn another_runs_rentals_are_no_part_of_this_ones_spend() -> Result<()> {
+    fn another_search_s_rentals_are_no_part_of_this_ones_spend() -> Result<()> {
         let (_dir, store) = temp_store();
         let owner = sample_search(7);
         let other = sample_search(8);
@@ -459,7 +459,7 @@ mod tests {
     }
 
     #[test]
-    fn the_deadline_is_anchored_at_the_earliest_rental_of_the_run() -> Result<()> {
+    fn the_deadline_is_anchored_at_the_earliest_rental_of_the_search() -> Result<()> {
         let (_dir, store) = temp_store();
         let owner = sample_search(7);
         // The anchor is the first rental, whether it is closed or open, so
@@ -482,7 +482,7 @@ mod tests {
     }
 
     #[test]
-    fn a_run_that_rented_nothing_has_no_deadline_to_pass() -> Result<()> {
+    fn a_search_that_rented_nothing_has_no_deadline_to_pass() -> Result<()> {
         let (_dir, store) = temp_store();
         let owner = sample_search(7);
         let budget = Budget {
@@ -559,7 +559,7 @@ mod tests {
     #[test]
     fn a_window_of_no_time_charges_nothing() {
         assert_eq!(Cost::accrued(Price(82_400), 0), Cost(0));
-        // A rate of nothing charges nothing however long it searches.
+        // A rate of nothing charges nothing however long it runs.
         assert_eq!(Cost::accrued(Price(0), 7_200_000), Cost(0));
     }
 

@@ -592,7 +592,7 @@ mod tests {
     }
 
     #[test]
-    fn the_rates_cover_the_latest_session_and_the_commit_count_the_run() {
+    fn the_rates_cover_the_latest_session_and_the_commit_count_the_search() {
         // A search resumed after an hour of downtime: merging the gap into the
         // rates would collapse them, so they cover the latest session alone.
         let timeline = merged(&[

@@ -22,11 +22,11 @@ use common::{
 };
 use sima_pipeline::Event;
 
-/// The format every test here searches: the WGSL Gray-Scott model, whose devices
+/// The format every test here runs: the WGSL Gray-Scott model, whose devices
 /// the Vulkan loader enumerates.
 const FORMAT: &str = "ca_evolution.gray_scott.v1";
 
-/// The candidates and segments every multi-device test here searches.
+/// The candidates and segments every multi-device test here runs.
 ///
 /// Sized so both classes provably pull work: a device's first task waits on
 /// its worker's handshake, which initializes its GPU backend, so a class that
@@ -129,7 +129,7 @@ fn assert_chains_never_split(config: &Path) -> Vec<(String, usize)> {
     for (chain, trail) in chain_trails(config).iter().enumerate() {
         let devices = chain_devices(trail, &ran_on);
         // A chain whose segments were all committed by an earlier session
-        // contributes no lease to this journal; one that ran must have search in
+        // contributes no lease to this journal; one that ran must have run in
         // one place.
         assert!(
             devices.len() <= 1,
@@ -145,7 +145,7 @@ fn assert_chains_never_split(config: &Path) -> Vec<(String, usize)> {
     per_device
 }
 
-/// A chain that has search on a device whose name contains `device`, and still
+/// A chain that has run on a device whose name contains `device`, and still
 /// has segments left — the state a rebind needs to have anything to move.
 fn chain_with_work_on(config: &Path, device: &str) -> Option<usize> {
     let events = journal_events(config);
@@ -260,7 +260,7 @@ mod on_device {
     /// A chain bound to a class the config no longer names moves to one that is
     /// present, loudly, and the search converges.
     #[test]
-    fn removing_a_device_rebinds_its_chains_and_the_run_converges() {
+    fn removing_a_device_rebinds_its_chains_and_the_search_converges() {
         require_devices(FORMAT, &["nvidia", "intel"]);
         let dir = tempfile::tempdir().expect("temp dir");
         let two = common::write_config_text(
@@ -312,7 +312,7 @@ mod on_device {
     /// commits under a plain worker count: placement is operational, so it reaches
     /// nothing a search records.
     #[test]
-    fn a_single_device_run_commits_the_same_manifest_as_a_plain_worker_count() {
+    fn a_single_device_search_commits_the_same_manifest_as_a_plain_worker_count() {
         require_devices(FORMAT, &["nvidia"]);
         let dir = tempfile::tempdir().expect("temp dir");
         // The reference: a plain worker count over the backend's own device

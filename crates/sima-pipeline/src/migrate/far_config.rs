@@ -20,7 +20,7 @@
 //!
 //! `[budget]` travels in one key and only to a machine of yours:
 //! `max_wall_clock_ms` bounds the search's own computing, and is worth keeping
-//! only where no bill searches against the time it bounds. `max_spend_usd` needs
+//! only where no bill runs against the time it bounds. `max_spend_usd` needs
 //! the provider key that never travels.
 //!
 //! **The destination's form is what the synthesis takes**, so every decision
@@ -172,7 +172,7 @@ pub(crate) struct Registration {
     pub(crate) sdk: Option<Sdk>,
 }
 
-/// The config the far side searches, synthesized from the local config's own text.
+/// The config the far side runs, synthesized from the local config's own text.
 ///
 /// Working from the file text rather than the loaded value is what preserves
 /// `[search]` exactly: the section is carried across as a parsed value and never
@@ -282,7 +282,7 @@ fn far_domain(registration: &Registration) -> toml::Table {
 /// on rented hardware saves nothing: the bill is identical whether the machine
 /// computes or idles, so a machine stopped and still billing costs what a
 /// computing one costs and returns nothing. The ceiling is worth keeping only
-/// where no bill searches against the time — a plain local search, and a machine of
+/// where no bill runs against the time — a plain local search, and a machine of
 /// yours. A
 /// detached search on rented hardware therefore computes until `sima recall` ends
 /// it, which is also what takes the rental down.
@@ -650,7 +650,7 @@ mod tests {
     }
 
     #[test]
-    fn two_runs_under_one_root_never_collide() {
+    fn two_searches_under_one_root_never_collide() {
         let first = SearchId::from_hash(sima_core::hash_bytes(b"first"));
         let second = SearchId::from_hash(sima_core::hash_bytes(b"second"));
         assert_ne!(
@@ -662,7 +662,7 @@ mod tests {
     // ---- Identity, which the whole move rests on ----
 
     #[test]
-    fn the_synthesized_config_is_the_same_run() {
+    fn the_synthesized_config_is_the_same_search() {
         let local = declared();
         for (host, probed) in [
             (OWNED, &[][..]),
@@ -756,7 +756,7 @@ mod tests {
     }
 
     #[test]
-    fn the_run_settings_travel_and_the_local_ones_do_not() {
+    fn the_search_settings_travel_and_the_local_ones_do_not() {
         let local = declared();
         let far = synthesized(OWNED, &[]);
         assert_eq!(far.execution.max_attempts, 3);

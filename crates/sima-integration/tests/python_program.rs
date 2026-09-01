@@ -37,7 +37,7 @@ use sima_store::Store;
 const FORMAT: &str = "example.stepper.v1";
 /// The generator it draws candidates with.
 const GENERATOR: &str = "example.stepper.candidates";
-/// The root seed every configuration here searches under. Candidate `i` is the
+/// The root seed every configuration here runs under. Candidate `i` is the
 /// byte `(root_seed + i) % 256`, so the candidates are 7, 8, and upward.
 const ROOT_SEED: u64 = 7;
 /// The state a stepper task commits: a `u64` step and a `u64` accumulator.
@@ -53,7 +53,7 @@ fn repo() -> PathBuf {
         .to_path_buf()
 }
 
-/// Asserts `python3` searches, once per test process.
+/// Asserts `python3` runs, once per test process.
 ///
 /// The interpreter is a requirement of this suite, not an option: a machine
 /// without it fails here, naming what is missing, rather than reporting a green
@@ -67,7 +67,7 @@ fn require_python3() {
         match version {
             Ok(output) if output.status.success() => {}
             other => panic!(
-                "these tests drive a Python program, so python3 is required and must search: {other:?}"
+                "these tests drive a Python program, so python3 is required and must run: {other:?}"
             ),
         }
     });
@@ -499,7 +499,7 @@ fn a_worker_death_mid_segment_resumes_from_the_checkpoint() -> Result<()> {
 }
 
 #[test]
-fn a_transient_failure_is_retried_and_the_run_completes() -> Result<()> {
+fn a_transient_failure_is_retried_and_the_search_completes() -> Result<()> {
     // A `Done` carrying the failed arm: the parent journals the program's own
     // reason and retries the task, and the search reaches the same end.
     let dir = tempfile::tempdir().expect("temp dir");
@@ -705,7 +705,7 @@ fn worker_hello() -> Vec<u8> {
 /// Spawns `command`, waiting out a wrapper that is momentarily unexecutable.
 ///
 /// A file open for writing anywhere in the system cannot be executed. Every
-/// test here writes its own wrapper and then searches it, and a spawn elsewhere in
+/// test here writes its own wrapper and then runs it, and a spawn elsewhere in
 /// this process that forks while one of those writes is open holds that write
 /// end until its own exec — so an exec landing inside that window is refused
 /// with `ETXTBSY`. The window closes on its own, so the spawn is retried

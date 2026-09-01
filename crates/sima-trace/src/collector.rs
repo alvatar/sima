@@ -68,7 +68,7 @@ impl From<Sender<Event>> for Emitter {
 }
 
 /// A record consumer the collector thread calls: the search's observer, borrowed
-/// for the scope the collector searches in. `Sync` because the collector thread
+/// for the scope the collector runs in. `Sync` because the collector thread
 /// calls it while the caller's thread holds the same reference.
 pub type Observer<'a> = &'a (dyn Fn(&Record) + Sync);
 

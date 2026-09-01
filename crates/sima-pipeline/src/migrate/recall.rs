@@ -25,7 +25,7 @@
 //! **The far journal is read, never followed.** A definitive failure is written
 //! there and travels no other way, since journals do not sync, so a recall that
 //! did not read it would bring a search that cannot complete home as one with
-//! tasks still to search. The read is one `sima follow-serve --once` against the
+//! tasks still to run. The read is one `sima follow-serve --once` against the
 //! far side and changes nothing there.
 //!
 //! **A rented machine that is already gone leaves nothing to contact.** Its
@@ -188,7 +188,7 @@ mod tests {
     }
 
     #[test]
-    fn a_recall_of_a_driving_run_winds_it_down_pulls_and_tears_the_rental_down() -> Result<()> {
+    fn a_recall_of_a_driving_search_winds_it_down_pulls_and_tears_the_rental_down() -> Result<()> {
         let local = local(RENTED, PROMPT, Some(3));
         let search = local.config.search.id();
         let lock = local.store.acquire_search_lock(&search)?;
@@ -223,7 +223,7 @@ mod tests {
     }
 
     #[test]
-    fn a_recall_of_an_ended_run_collects_it_without_restarting_anything() -> Result<()> {
+    fn a_recall_of_an_ended_search_collects_it_without_restarting_anything() -> Result<()> {
         // The other way a search comes home: it finished while nothing was
         // attached, so there is nothing to end and only results to fetch.
         let local = local(RENTED, PROMPT, Some(3));
@@ -250,7 +250,7 @@ mod tests {
     }
 
     #[test]
-    fn a_recall_of_an_ended_run_short_of_its_end_reports_what_is_left() -> Result<()> {
+    fn a_recall_of_an_ended_search_short_of_its_end_reports_what_is_left() -> Result<()> {
         let local = local(RENTED, PROMPT, Some(3));
         let (_far_dir, far_store) = far_store(&local.config, Some(8));
         let far = Scripted::new().syncing_with(&far_store, &local.config);

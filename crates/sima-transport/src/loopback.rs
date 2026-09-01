@@ -51,7 +51,7 @@ impl LoopbackTransport {
         resolver: SharedResolver,
     ) -> LoopbackTransport {
         LoopbackTransport {
-            hello: Hello::for_run(format, checkpoint_interval, checkpoint_interval_steps),
+            hello: Hello::for_search(format, checkpoint_interval, checkpoint_interval_steps),
             resolver,
         }
     }
@@ -80,7 +80,7 @@ impl WorkerTransport for LoopbackTransport {
             }
         });
         let (sender, link_events) = channel();
-        // The loopback host searches in-process on this machine: Event frames
+        // The loopback host runs in-process on this machine: Event frames
         // forward under the local pool's empty host label; there is no
         // stderr to capture.
         let context = subprocess::EventContext {
@@ -306,7 +306,7 @@ mod tests {
 
     #[test]
     fn a_loopback_worker_names_no_program() -> Result<()> {
-        // The loopback host searches this process's own build, so it answers for
+        // The loopback host runs this process's own build, so it answers for
         // its format in process and no program travelled to it. The link
         // carries that answer through, and the journal records no digest.
         let transport = stub_transport(None);
@@ -364,7 +364,7 @@ mod tests {
             class: DeviceClass::new("8086:7d51").expect("class id"),
             member: 0,
         };
-        // The handshake completes inside spawn, so the resolver has already search.
+        // The handshake completes inside spawn, so the resolver has already run.
         let link = transport
             .spawn(0, Some(&binding), discarding_emitter())?
             .into_link();

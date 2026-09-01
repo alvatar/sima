@@ -9,7 +9,7 @@
 //!
 //! This module records it: each session journals the digest of the file that
 //! served it, and a session resuming a search compares that record against the
-//! file it is about to search. A difference is the user's decision to make, so
+//! file it is about to run. A difference is the user's decision to make, so
 //! the search stops until the invocation states an answer.
 
 use sima_core::{Error, Result};
@@ -182,7 +182,7 @@ mod tests {
         let (_dir, store) = temp_store();
         let search = stub_config()?;
         let first = hash_bytes(b"the build that ran");
-        let second = hash_bytes(b"the build that would search now");
+        let second = hash_bytes(b"the build that would run now");
         bind(
             &store,
             &search,

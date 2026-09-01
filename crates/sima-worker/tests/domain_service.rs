@@ -264,7 +264,7 @@ mod session {
     }
 
     #[test]
-    fn a_session_answers_every_question_a_run_asks() {
+    fn a_session_answers_every_question_a_search_asks() {
         // One session, every question: a program is spawned once for a search and
         // answers each of them over the pipe it already holds.
         let mut service = service("stub.v1");
@@ -352,7 +352,7 @@ mod session {
 
 #[test]
 fn a_wrapped_program_answers_the_role_stated_inside_the_wrapper() {
-    // How a program on a fleet machine is asked which devices it can search on:
+    // How a program on a fleet machine is asked which devices it can run on:
     // something wraps it to get there — an ssh hop, a container runtime, a
     // shell that states its environment — so the wrapper carries the role and
     // the session appends nothing.

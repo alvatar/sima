@@ -103,12 +103,12 @@ fn permuted_commit_orders_produce_byte_identical_manifests() -> Result<()> {
     // the manifests must still agree byte for byte — search identity is
     // independent of worker completion order, and journals are
     // observational.
-    let (dir_a, _store_a, run_a) = search_lifecycle(&[1, 2, 3], &["started", "finished"])?;
-    let (dir_b, _store_b, run_b) = search_lifecycle(&[3, 1, 2], &["resumed after a crash"])?;
-    assert_eq!(run_a, run_b);
+    let (dir_a, _store_a, search_a) = search_lifecycle(&[1, 2, 3], &["started", "finished"])?;
+    let (dir_b, _store_b, search_b) = search_lifecycle(&[3, 1, 2], &["resumed after a crash"])?;
+    assert_eq!(search_a, search_b);
     assert_eq!(
-        manifest_bytes(dir_a.path(), &run_a),
-        manifest_bytes(dir_b.path(), &run_b)
+        manifest_bytes(dir_a.path(), &search_a),
+        manifest_bytes(dir_b.path(), &search_b)
     );
     Ok(())
 }
@@ -149,7 +149,7 @@ fn a_copied_store_is_fully_portable() -> Result<()> {
 #[test]
 fn concurrent_workers_converge_on_the_single_threaded_manifest() -> Result<()> {
     let seeds: Vec<u64> = (0..16).collect();
-    let (reference_dir, _store, reference_run) = search_lifecycle(&seeds, &[])?;
+    let (reference_dir, _store, reference_search) = search_lifecycle(&seeds, &[])?;
     let dir = tempfile::tempdir().expect("create temp dir");
     let store = Store::open(dir.path())?;
     // Four workers commit disjoint task ranges concurrently.
@@ -174,10 +174,10 @@ fn concurrent_workers_converge_on_the_single_threaded_manifest() -> Result<()> {
     })?;
     let search = store.create_search(&config())?;
     store.finalize_search(&search, &keys)?;
-    assert_eq!(search, reference_run);
+    assert_eq!(search, reference_search);
     assert_eq!(
         manifest_bytes(dir.path(), &search),
-        manifest_bytes(reference_dir.path(), &reference_run)
+        manifest_bytes(reference_dir.path(), &reference_search)
     );
     Ok(())
 }

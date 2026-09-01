@@ -31,7 +31,7 @@ use crate::task_keys::task_keys;
 pub enum MigrateOutcome {
     /// Every task committed and the local manifest was written.
     Finalized { search: SearchId },
-    /// The far search ended and the results came home, with tasks still to search.
+    /// The far search ended and the results came home, with tasks still to run.
     /// The search is resumable, here or on another migration.
     Outstanding { search: SearchId, remaining: usize },
     /// A task failed definitively on the far side; no manifest was written.
@@ -75,7 +75,7 @@ pub(crate) struct Overrides {
     pub(crate) stated_nowhere: (Duration, Duration),
     /// How long the follow waits for the far search's first journal line. The
     /// production bound covers a process start; what the suite fixes is which
-    /// failure a wait that ran out reports, so it searches the same path in a
+    /// failure a wait that ran out reports, so it runs the same path in a
     /// fraction of the time.
     pub(crate) attach_bound: Duration,
     /// How long the follow waits before polling again. What the suite fixes is
@@ -256,7 +256,7 @@ impl<'a> FarSearch<'a> {
     ///
     /// `sima sync-serve` takes the far side's search lock and the far `sima search`
     /// holds it while running, so the pull cannot proceed until the far search is
-    /// gone. A wait that searches out is recorded and then escalated: the search is
+    /// gone. A wait that runs out is recorded and then escalated: the search is
     /// ended outright, and one that survives even that fails the migration by
     /// name. Either way the far search is gone before the pull in front of it.
     ///

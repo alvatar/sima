@@ -1,14 +1,14 @@
-//! Chain placement: which device class a chain's work searches on.
+//! Chain placement: which device class a chain's work runs on.
 //!
 //! Placement is greedy and sticky. An unbound chain goes to whichever class
 //! pulls it first, so a faster device naturally takes more chains — no shares
 //! to tune, and a device that throttles simply pulls less. Once bound, every
-//! segment, retry, and resumed attempt of that chain searches on the same class,
+//! segment, retry, and resumed attempt of that chain runs on the same class,
 //! so a candidate's whole trajectory is internally coherent and a retried
 //! attempt reproduces what the failed attempt would have committed.
 //!
 //! A binding moves only when its class is absent from the current device set —
-//! the hardware changed between sessions — and the journal records it. Run
+//! the hardware changed between sessions — and the journal records it. Search
 //! continuity outranks placement: a chain never strands because the card it
 //! ran on is gone.
 //!
@@ -24,7 +24,7 @@ use sima_core::{Error, Result};
 /// What a worker of a given class may do with a queued task.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Eligibility {
-    /// The chain is already bound to this worker's class: search it.
+    /// The chain is already bound to this worker's class: run it.
     Run,
     /// The chain is unbound: this worker takes it and binds it.
     Bind,
@@ -40,7 +40,7 @@ pub(crate) enum Eligibility {
 ///
 /// Pure over its inputs, so the rule is verifiable without threads, workers,
 /// or a device.
-/// Both classes arrive by reference: this searches once per queued task on every
+/// Both classes arrive by reference: this runs once per queued task on every
 /// task pull, so the scan compares in place rather than cloning a class.
 pub(crate) fn eligibility(
     bound: Option<&DeviceClass>,
@@ -164,7 +164,7 @@ mod tests {
     #[test]
     fn a_partitioned_cards_profiles_are_separate_classes() {
         // Two slices of one card report the same pair, so only the profile
-        // tells them apart. Work bound to the larger slice may not search on the
+        // tells them apart. Work bound to the larger slice may not run on the
         // smaller one, and eligibility follows the class it was given.
         let small = class("10de:2330:1g.10gb");
         let large = class("10de:2330:4g.40gb");

@@ -711,7 +711,7 @@ mod tests {
     fn a_stale_resume_checkpoint_is_ignored() -> Result<()> {
         // Out-of-range saved steps — before this segment's start and at or
         // past its end — and undecodable bytes are all ignored: the task
-        // searches fully and commits the reference state.
+        // runs fully and commits the reference state.
         let start = fold(StubState { step: 0, acc: 42 }, 2);
         let reference = run_accumulate(2, 42, Some(&start.to_bytes()), 0, &NoCheckpoint)?;
         let (reference_bytes, _, _) = state_and_stats(&reference);

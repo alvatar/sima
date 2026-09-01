@@ -17,7 +17,7 @@ pub const API_KEY_VAR: &str = "VAST_API_KEY";
 /// Everything a [`VastProvider`](crate::VastProvider) needs: where the API
 /// lives, the key that opens it, and the shape of the rentals it creates.
 ///
-/// The key is read from the environment and stays there. Run configuration
+/// The key is read from the environment and stays there. Search configuration
 /// is content-addressed and identity-bearing, so a key placed in config
 /// would enter search hashes and the store.
 #[derive(Debug, Clone)]

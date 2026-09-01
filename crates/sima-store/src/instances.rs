@@ -429,7 +429,7 @@ mod tests {
     }
 
     #[test]
-    fn records_of_several_runs_and_providers_coexist() -> Result<()> {
+    fn records_of_several_searches_and_providers_coexist() -> Result<()> {
         let (_dir, store) = temp_store();
         let mut written = Vec::new();
         for (index, provider) in ["stub", "vastai"].iter().enumerate() {

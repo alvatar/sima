@@ -74,12 +74,12 @@ pub(crate) struct PayloadSpec {
     /// One file or one directory. A single file is the program; a directory is
     /// whatever `install` makes of it.
     pub(crate) payload: PathBuf,
-    /// The shell script the destination searches over the materialized payload.
+    /// The shell script the destination runs over the materialized payload.
     /// `None` for a single-file payload, which is its own entry point.
     pub(crate) install: Option<PathBuf>,
 }
 
-/// One file of a payload: where it sits in the tree, whether it searches, and the
+/// One file of a payload: where it sits in the tree, whether it runs, and the
 /// object holding its bytes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct FileEntry {
@@ -352,7 +352,7 @@ pub(crate) fn materialize(store: &Store, digest: &Hash, dest: &Path) -> Result<M
 }
 
 /// Where the program answering for one format is installed on the machine
-/// that searches it.
+/// that runs it.
 ///
 /// ```text
 ///   <config-dir>/program/<format>/
@@ -452,7 +452,7 @@ pub(crate) fn install(store: &Store, digest: &Hash, tree: &ProgramTree) -> Resul
 }
 
 /// Fills the tree: the previous trees are removed, the payload is materialized,
-/// and the install searches, leaving the entry point the config's `binary` names.
+/// and the install runs, leaving the entry point the config's `binary` names.
 ///
 /// Called with the tree's lock held and its stamp already removed, so what a
 /// failure here leaves behind is a tree nothing claims.
@@ -488,9 +488,9 @@ fn build(store: &Store, digest: &Hash, tree: &ProgramTree) -> Result<()> {
     Ok(())
 }
 
-/// Writes the manifest's script out and searches it over the materialized payload.
+/// Writes the manifest's script out and runs it over the materialized payload.
 ///
-/// The script searches under this machine's own environment plus the two variables
+/// The script runs under this machine's own environment plus the two variables
 /// that tell it where to read from and where to leave what it builds. Nothing
 /// is forwarded from the machine that sent the payload: an installed program is
 /// built out of what the destination has.

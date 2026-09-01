@@ -148,7 +148,7 @@ impl<P: Provider + ?Sized> Drop for InstanceGuard<'_, P> {
 /// the machine and takes it down.
 ///
 /// A record already cleared leaves nothing to reconstruct the rental from,
-/// so the destroy still searches — it is idempotent — and no entry is written.
+/// so the destroy still runs — it is idempotent — and no entry is written.
 pub(crate) fn teardown<P: Provider + ?Sized>(
     provider: &P,
     store: &Store,
@@ -158,7 +158,7 @@ pub(crate) fn teardown<P: Provider + ?Sized>(
 ) -> Result<()> {
     provider.destroy(id)?;
     // A death here leaves a destroyed machine with its record still standing:
-    // reconcile re-searches the close-out under the same key, so the ledger holds
+    // reconcile re-runs the close-out under the same key, so the ledger holds
     // exactly one entry and the machine is never double-charged.
     sima_core::crashpoint("provider.destroyed");
     match store.instance_record(tag)? {
@@ -199,7 +199,7 @@ pub(crate) fn close_out(
         cost_micro_usd: Cost::accrued(rate, elapsed_ms).0,
     })?;
     // A death here leaves the entry written and the record uncleared: the
-    // re-search's close-out overwrites the entry under the same (tag, stamp) key
+    // repeated search's close-out overwrites the entry under the same (tag, stamp) key
     // rather than adding a second, so the ledger still holds exactly one.
     sima_core::crashpoint("provider.entry-written");
     store.remove_instance(&record.tag)

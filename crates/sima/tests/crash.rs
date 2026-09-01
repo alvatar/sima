@@ -2,7 +2,7 @@
 //! store that converges to the reference manifest.
 //!
 //! Parent-side points SIGKILL the orchestrator — each case asserts the
-//! unmaskable death, then re-searches unarmed over the same store and compares
+//! unmaskable death, then re-runs unarmed over the same store and compares
 //! manifests, with the kernel-released orchestrator lock asserted along
 //! the way. The executor-side point fires inside a `sima-worker` child,
 //! so the orchestrator survives: those cases assert convergence through
@@ -32,7 +32,7 @@ fn write_config(dir: &Path, name: &str, store: &str) -> PathBuf {
 /// Runs `sima search <config>` with `extra` appended, armed with `crashpoint` when
 /// given, and returns the exit status. Output is discarded — the store carries
 /// the assertions.
-fn sima_run_with(config: &Path, crashpoint: Option<&str>, extra: &[&str]) -> ExitStatus {
+fn sima_search_with(config: &Path, crashpoint: Option<&str>, extra: &[&str]) -> ExitStatus {
     let mut command = sima_command();
     command
         .args(["search", config.to_str().expect("utf-8 path")])
@@ -46,18 +46,18 @@ fn sima_run_with(config: &Path, crashpoint: Option<&str>, extra: &[&str]) -> Exi
 }
 
 /// Runs `sima search <config>` on this machine alone.
-fn sima_run(config: &Path, crashpoint: Option<&str>) -> ExitStatus {
-    sima_run_with(config, crashpoint, &[])
+fn sima_search(config: &Path, crashpoint: Option<&str>) -> ExitStatus {
+    sima_search_with(config, crashpoint, &[])
 }
 
 /// Runs `sima search <config> --fleet`, so the config's rented machine is engaged.
-fn sima_run_fleet(config: &Path, crashpoint: Option<&str>) -> ExitStatus {
-    sima_run_with(config, crashpoint, &["--fleet"])
+fn sima_search_fleet(config: &Path, crashpoint: Option<&str>) -> ExitStatus {
+    sima_search_with(config, crashpoint, &["--fleet"])
 }
 
 /// Runs `sima search <config>` unarmed and captures its output, for assertions
 /// on the progress lines a resumed search prints.
-fn sima_run_output(config: &Path) -> std::process::Output {
+fn sima_search_output(config: &Path) -> std::process::Output {
     let mut command = sima_command();
     command
         .args(["search", config.to_str().expect("utf-8 path")])
@@ -199,7 +199,7 @@ fn a_removal_death_resumes_to_an_empty_store() {
         let config = write_config(dir.path(), &format!("rm-{slug}.toml"), &store_rel);
 
         // A finalized search, then an armed removal that dies mid-way.
-        assert_eq!(sima_run(&config, None).code(), Some(0));
+        assert_eq!(sima_search(&config, None).code(), Some(0));
         let status = sima_rm(&config, Some(arming));
         assert_eq!(
             status.signal(),
@@ -245,21 +245,21 @@ fn sima_pack(store: &Path, crashpoint: Option<&str>) -> ExitStatus {
 }
 
 /// A packing search SIGKILLed at each of its crashpoints converges by re-running:
-/// no object loses its last copy at any point, so the re-search finishes what the
+/// no object loses its last copy at any point, so repeating the operation finishes what the
 /// dead one started and the search the store holds still enumerates whole.
 ///
 /// The search's objects fit one pack, so the shape at every point is exact: the
 /// pack is durable before a single loose file goes, the armed point fires at
 /// its first hit, and a fixed object set packs to one fixed file name.
 #[test]
-fn a_pack_death_converges_on_re_run() {
+fn a_pack_death_converges_when_repeated() {
     let mut converged = Vec::new();
     for arming in ["pack.after-pack-write", "pack.mid-loose-delete"] {
         let dir = tempfile::tempdir().expect("temp dir");
         let slug = arming.replace('.', "-");
         let store_rel = format!("./store-{slug}");
         let config = write_config(dir.path(), &format!("pack-{slug}.toml"), &store_rel);
-        assert_eq!(sima_run(&config, None).code(), Some(0));
+        assert_eq!(sima_search(&config, None).code(), Some(0));
         let reference = manifest_of(&config).expect("the search finalized");
         let store = dir.path().join(format!("store-{slug}"));
         let loose_before = object_file_count(&store);
@@ -307,12 +307,12 @@ fn a_pack_death_converges_on_re_run() {
             0,
             "{arming}: loose files survived the packing"
         );
-        // The re-search recognizes the completed pack: the same single file,
+        // Repeating the operation recognizes the completed pack: the same single file,
         // nothing written twice.
         assert_eq!(
             common::pack_files(&store),
             packs_at_death,
-            "{arming}: the re-search lands on the pack the dead search wrote"
+            "{arming}: repeating the operation lands on the pack the dead search wrote"
         );
         assert_eq!(manifest_of(&config), Some(reference), "{arming}");
         Store::open(&store)
@@ -333,10 +333,10 @@ fn a_pack_death_converges_on_re_run() {
 /// child sails past every planted point and exits 0, so a passing armed
 /// case below genuinely proves the injected death.
 #[test]
-fn an_unarmed_run_is_not_sigkilled() {
+fn an_unarmed_search_is_not_sigkilled() {
     let dir = tempfile::tempdir().expect("temp dir");
     let config = write_config(dir.path(), "unarmed.toml", "./store");
-    let status = sima_run(&config, None);
+    let status = sima_search(&config, None);
     assert_ne!(status.signal(), Some(9), "unarmed child died by SIGKILL");
     assert_eq!(status.code(), Some(0), "unarmed child finalizes");
 }
@@ -427,7 +427,7 @@ fn resumed_steps(config_path: &Path) -> Vec<u64> {
 /// step count is strictly below a full segment), and the search finalizes to
 /// `reference`.
 fn assert_worker_death_converges(config: &Path, arming: &str, reference: &Manifest) {
-    let status = sima_run(config, Some(arming));
+    let status = sima_search(config, Some(arming));
     assert_eq!(
         status.code(),
         Some(0),
@@ -459,7 +459,7 @@ fn assert_worker_death_converges(config: &Path, arming: &str, reference: &Manife
     // than its full 100 steps.
     let steps = resumed_steps(config);
     assert_eq!(steps.len(), 2, "both segments committed, got {steps:?}");
-    assert_eq!(steps[0], 100, "the first segment searches fully");
+    assert_eq!(steps[0], 100, "the first segment runs fully");
     assert!(
         steps[1] < 100,
         "the checkpoint must shorten the retry, got {} steps",
@@ -477,7 +477,7 @@ fn a_worker_death_mid_segment_converges_through_retry() {
 
     let reference_config =
         write_segmented_config(dir.path(), "reference.toml", "./store-seg-reference");
-    assert_eq!(sima_run(&reference_config, None).code(), Some(0));
+    assert_eq!(sima_search(&reference_config, None).code(), Some(0));
     let reference = manifest_of(&reference_config).expect("reference manifest");
 
     let config = write_segmented_config(dir.path(), "armed.toml", "./store-seg-armed");
@@ -488,7 +488,7 @@ fn a_worker_death_mid_segment_converges_through_retry() {
 /// the started line names them and the commit counter continues from them
 /// instead of restarting at 1.
 #[test]
-fn a_resumed_run_reports_prior_commits_in_its_progress() {
+fn a_resumed_search_reports_prior_commits_in_its_progress() {
     let dir = tempfile::tempdir().expect("temp dir");
     let config = write_segmented_config(
         dir.path(),
@@ -498,14 +498,14 @@ fn a_resumed_run_reports_prior_commits_in_its_progress() {
 
     // Death at the second lease: the first segment's task is committed and
     // durable, the second is not.
-    let status = sima_run(&config, Some("lease.held:2"));
+    let status = sima_search(&config, Some("lease.held:2"));
     assert_eq!(
         status.signal(),
         Some(9),
         "the armed child dies by SIGKILL, got {status:?}"
     );
 
-    let output = sima_run_output(&config);
+    let output = sima_search_output(&config);
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     let text = String::from_utf8(output.stdout).expect("stdout is UTF-8");
     assert!(
@@ -531,14 +531,14 @@ fn a_worker_death_converges_under_the_step_cadence() {
 
     let reference_config =
         write_step_segmented_config(dir.path(), "step-reference.toml", "./store-step-ref");
-    assert_eq!(sima_run(&reference_config, None).code(), Some(0));
+    assert_eq!(sima_search(&reference_config, None).code(), Some(0));
     let reference = manifest_of(&reference_config).expect("reference manifest");
 
     let config = write_step_segmented_config(dir.path(), "step-armed.toml", "./store-step-armed");
     assert_worker_death_converges(&config, "stub.accumulate.step:150", &reference);
 }
 
-/// The pre-existing crashpoints re-search under a segmented, checkpointing
+/// The pre-existing crashpoints run under a segmented, checkpointing
 /// config: every death resumes to the segmented reference manifest.
 #[test]
 fn existing_crashpoints_hold_under_a_segmented_config() {
@@ -546,7 +546,7 @@ fn existing_crashpoints_hold_under_a_segmented_config() {
 
     let reference_config =
         write_segmented_config(dir.path(), "seg-reference.toml", "./store-seg-ref");
-    assert_eq!(sima_run(&reference_config, None).code(), Some(0));
+    assert_eq!(sima_search(&reference_config, None).code(), Some(0));
     let reference = manifest_of(&reference_config).expect("reference manifest");
 
     for arming in [
@@ -562,13 +562,13 @@ fn existing_crashpoints_hold_under_a_segmented_config() {
             &format!("./store-{slug}"),
         );
 
-        let status = sima_run(&config, Some(arming));
+        let status = sima_search(&config, Some(arming));
         assert_eq!(
             status.signal(),
             Some(9),
             "{arming}: the armed child dies by SIGKILL, got {status:?}"
         );
-        let resumed = sima_run(&config, None);
+        let resumed = sima_search(&config, None);
         assert_eq!(
             resumed.code(),
             Some(0),
@@ -591,7 +591,7 @@ fn every_crashpoint_death_resumes_to_the_reference_manifest() {
 
     // The reference: the same behaviors search uninterrupted.
     let reference_config = write_config(dir.path(), "reference.toml", "./store-reference");
-    assert_eq!(sima_run(&reference_config, None).code(), Some(0));
+    assert_eq!(sima_search(&reference_config, None).code(), Some(0));
     let reference = manifest_of(&reference_config).expect("reference manifest");
 
     for arming in [
@@ -610,7 +610,7 @@ fn every_crashpoint_death_resumes_to_the_reference_manifest() {
             &format!("./store-{slug}"),
         );
 
-        let status = sima_run(&config, Some(arming));
+        let status = sima_search(&config, Some(arming));
         assert_eq!(
             status.signal(),
             Some(9),
@@ -633,7 +633,7 @@ fn every_crashpoint_death_resumes_to_the_reference_manifest() {
 
         // Resume unarmed: the frontier re-derives and the search finalizes
         // to the byte-identical manifest.
-        let resumed = sima_run(&config, None);
+        let resumed = sima_search(&config, None);
         assert_eq!(
             resumed.code(),
             Some(0),
@@ -679,12 +679,12 @@ fn write_fleet_config(dir: &Path, name: &str, store: &str) -> PathBuf {
 }
 
 /// A death at each provider close-out window leaves a store that recovers: the
-/// unarmed re-search finalizes over the same store, and no rental is charged
+/// unarmed repeated search finalizes over the same store, and no rental is charged
 /// twice.
 ///
 /// The stub provider is in-process, so a crash takes its market with it: the
 /// crashed attempt's ledger record survives, but reconcile keeps a search's own
-/// records while it holds the lock, so the re-search legitimately does not clear
+/// records while it holds the lock, so the repeated search legitimately does not clear
 /// it — a separate lock-free reconcile does, which an in-process stub has no
 /// cross-process backend for. What this asserts end-to-end is that each window
 /// fires, the search recovers, and the ledger never double-charges a rental; the
@@ -706,19 +706,19 @@ fn a_provider_crash_recovers_without_double_charging() {
         );
 
         // Armed: the orchestrator dies by SIGKILL at the window.
-        let status = sima_run_fleet(&config, Some(arming));
+        let status = sima_search_fleet(&config, Some(arming));
         assert_eq!(
             status.signal(),
             Some(9),
             "{arming}: the armed search dies by SIGKILL, got {status:?}"
         );
 
-        // Unarmed re-search: the search recovers and finalizes despite the crashed
+        // Unarmed repeated search: the search recovers and finalizes despite the crashed
         // attempt's record still standing.
         assert_eq!(
-            sima_run_fleet(&config, None).code(),
+            sima_search_fleet(&config, None).code(),
             Some(0),
-            "{arming}: the re-search finalizes"
+            "{arming}: the repeated search finalizes"
         );
         assert!(
             manifest_of(&config).is_some(),

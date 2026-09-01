@@ -1,4 +1,4 @@
-//! Determinism acceptance: the same config search into fresh stores yields
+//! Determinism acceptance: the same config run into fresh stores yields
 //! byte-identical manifests, whatever the worker count and whatever order the
 //! journal happened to record.
 
@@ -9,7 +9,7 @@ use sima_core::Result;
 use sima_domains::StubBehavior;
 use sima_scheduler::SearchOutcome;
 
-/// One config search into two fresh stores yields byte-identical manifests.
+/// One config run into two fresh stores yields byte-identical manifests.
 #[test]
 fn same_config_in_two_fresh_stores_yields_identical_manifests() -> Result<()> {
     let cfg = config(

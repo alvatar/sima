@@ -56,7 +56,7 @@ fn fleet_config(
 }
 
 #[test]
-fn a_stub_fleet_run_finalizes_with_records_from_fleet_workers() -> Result<()> {
+fn a_stub_fleet_search_finalizes_with_records_from_fleet_workers() -> Result<()> {
     let dir = tempfile::tempdir().expect("temp dir");
     let config = fleet_config(
         dir.path(),
@@ -171,7 +171,7 @@ fn a_fleet_names_each_member_it_rents_before_that_machine_comes_up() -> Result<(
 }
 
 #[test]
-fn a_run_that_dies_acquiring_is_in_the_store_with_what_it_said() -> Result<()> {
+fn a_search_that_dies_acquiring_is_in_the_store_with_what_it_said() -> Result<()> {
     // The search is registered before any machine is asked for, so what putting it
     // on its machines takes is journaled where the work will be. A fleet that
     // cannot be brought up therefore leaves a search in the store: no task ran, so
@@ -265,7 +265,7 @@ fn the_ledger_holds_one_closed_entry_per_instance() -> Result<()> {
 }
 
 #[test]
-fn a_re_run_resumes_and_finalizes() -> Result<()> {
+fn running_again_resumes_and_finalizes() -> Result<()> {
     let dir = tempfile::tempdir().expect("temp dir");
     let config = fleet_config(
         dir.path(),
@@ -283,7 +283,7 @@ fn a_re_run_resumes_and_finalizes() -> Result<()> {
         )?,
         SearchOutcome::Finalized { .. }
     ));
-    // The same store, re-search: the frontier is empty, so the search re-finalizes
+    // The same store, repeated search: the frontier is empty, so the search re-finalizes
     // without re-evaluating a candidate, and the fleet is acquired and torn
     // down again cleanly.
     assert!(matches!(
@@ -341,8 +341,8 @@ fn an_interrupt_tears_the_fleet_down_and_leaves_the_ledger_closed() -> Result<()
 }
 
 #[test]
-fn an_interrupt_while_the_fleet_is_being_acquired_abandons_the_run() -> Result<()> {
-    // Acquisition is minutes of paid-for waiting before a single task searches,
+fn an_interrupt_while_the_fleet_is_being_acquired_abandons_the_search() -> Result<()> {
+    // Acquisition is minutes of paid-for waiting before a single task runs,
     // and it is where an operator most often changes their mind. The flag is
     // already up when the search starts, so the first member's walk is called off
     // before any offer is taken: the search comes back interrupted rather than
@@ -429,7 +429,7 @@ fn bound_hosts(events: &[Event]) -> std::collections::HashSet<String> {
 }
 
 #[test]
-fn without_the_flag_the_orchestrator_carries_the_run_and_nothing_is_rented() -> Result<()> {
+fn without_the_flag_the_orchestrator_carries_the_search_and_nothing_is_rented() -> Result<()> {
     // Declaring a rented class says a search *may* use it. This invocation does
     // not ask for it, so no provider is constructed, nothing is acquired, and
     // the orchestrator's own worker finalizes the search alone.

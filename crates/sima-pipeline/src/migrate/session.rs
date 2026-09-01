@@ -113,7 +113,7 @@ use crate::task_keys::task_keys;
 #[cfg(not(test))]
 const TICK: Duration = Duration::from_millis(100);
 
-/// How often a rental's budget is assessed while the follow searches. The ceiling
+/// How often a rental's budget is assessed while the follow runs. The ceiling
 /// is the search's and moves only with the clock and the rental's rate, so
 /// assessing it on every record poll would read the spend ledger ten times a
 /// second for an answer that changes on the scale of minutes.
@@ -230,7 +230,7 @@ pub fn migrate(
             };
             let provider = provider_for_rental(&rental)?;
             // The clock on this machine starts here, where it is first asked
-            // for, and every stage that waits for it searches under the one
+            // for, and every stage that waits for it runs under the one
             // deadline: its readiness and its reachability are stages of the
             // single wait the entry states a budget for.
             let usable_by = Instant::now() + spec.ready_timeout;
@@ -422,7 +422,7 @@ impl Session<'_> {
 
         // A far side already driving this search is a reattach: it holds the
         // closure it was sent and its own progress since, so pushing would send
-        // what it already has, and starting would search a second orchestrator
+        // what it already has, and starting would run a second orchestrator
         // against a store whose lock the first one holds.
         let reattached = far_search.far.driving()?;
         let (pid, opened) = match reattached {
@@ -514,7 +514,7 @@ impl Session<'_> {
     }
 
     /// Follows the far search until it ends, this side is interrupted, or a
-    /// rental's budget searches out, forwarding each record into the search's journal.
+    /// rental's budget runs out, forwarding each record into the search's journal.
     fn follow(
         &self,
         search: &SearchId,
@@ -548,7 +548,7 @@ impl Session<'_> {
         let mut first = true;
         // Whether this search has journaled a line of its own.
         let mut journaled = false;
-        // Unset, so the first tick assesses: a migration re-search under a ceiling
+        // Unset, so the first tick assesses: a migration invoked again under a ceiling
         // already spent must not first watch for an interval.
         let mut assessed: Option<Instant> = None;
         loop {
@@ -690,7 +690,7 @@ impl Session<'_> {
     }
 
     /// Step 3: the destination answers that it can drive this search, and a rented
-    /// one answers with the devices its far-side workers will search on.
+    /// one answers with the devices its far-side workers will run on.
     ///
     /// This is the first contact with the machine, and it is retried under the
     /// destination's own readiness bounds: a provider reports an instance ready
@@ -701,7 +701,7 @@ impl Session<'_> {
     /// so it is what bounds the wait; a machine that answers at once costs
     /// nothing, since the loop ends on the first connection that lands.
     ///
-    /// Only this step retries. Every later operation searches against a machine
+    /// Only this step retries. Every later operation runs against a machine
     /// that has already answered, so a failure there states something real —
     /// the search's directory could not be written, the far side could not be
     /// started, a sync broke mid-session — and repeating it would hide that.
@@ -749,7 +749,7 @@ impl Session<'_> {
         }
     }
 
-    /// The ceiling this migration searches under, or `None` when nothing is being
+    /// The ceiling this migration runs under, or `None` when nothing is being
     /// paid for. `[budget]` is the search's own, the same ceiling a fleet spends
     /// under; a machine of yours has no rate and so no ceiling to keep.
     fn budget(&self) -> Option<&Budget> {
@@ -946,7 +946,7 @@ mod tests {
     }
 
     #[test]
-    fn a_run_this_build_answers_pushes_no_program_and_declares_none() -> Result<()> {
+    fn a_search_this_build_answers_pushes_no_program_and_declares_none() -> Result<()> {
         // The counterpart: nothing about a program is written down, and the
         // push is the identity components and the frontier states alone.
         let local = local(RENTED, PROMPT, Some(3));
@@ -1114,7 +1114,7 @@ mod tests {
     fn a_far_search_that_never_journals_but_stays_up_reports_the_follow_s_refusal() -> Result<()> {
         // A search that is up owes no explanation: the follow's own refusal is
         // the whole of what happened, and no log is fetched to explain a death
-        // that did not occur. The bound the wait searches out on is production's;
+        // that did not occur. The bound the wait runs out on is production's;
         // the suite overrides only how long it is.
         let local = local(RENTED, PROMPT, Some(3));
         let far = Scripted::new()
@@ -1397,7 +1397,7 @@ mod tests {
     }
 
     #[test]
-    fn the_config_the_far_side_is_given_is_the_same_run() -> Result<()> {
+    fn the_config_the_far_side_is_given_is_the_same_search() -> Result<()> {
         // The whole move rests on it: a far side driving another search would
         // start the chain again from segment zero.
         let local = local(RENTED, PROMPT, Some(3));
@@ -1415,8 +1415,8 @@ mod tests {
     }
 
     #[test]
-    fn an_interrupt_while_the_run_is_being_sent_starts_nothing_and_keeps_no_machine() -> Result<()>
-    {
+    fn an_interrupt_while_the_search_is_being_sent_starts_nothing_and_keeps_no_machine()
+    -> Result<()> {
         // The window a placement spends sending a search is minutes long, and an
         // operator who lets go inside it asked for the migration to stop —
         // starting the far search anyway would leave a machine computing and
@@ -1591,7 +1591,7 @@ mod tests {
     }
 
     #[test]
-    fn an_interrupt_while_the_follow_opens_lets_go_of_the_run_it_started() -> Result<()> {
+    fn an_interrupt_while_the_follow_opens_lets_go_of_the_search_it_started() -> Result<()> {
         // A far search is up by the time this side waits for its first journal
         // line, so the flag means there what it means from the start on: let
         // go of it, rather than wait out the bound and report a search that never
@@ -1686,7 +1686,7 @@ mod tests {
     }
 
     #[test]
-    fn a_detached_migration_of_a_machine_of_yours_reports_where_the_run_is() -> Result<()> {
+    fn a_detached_migration_of_a_machine_of_yours_reports_where_the_search_is() -> Result<()> {
         // The outcome carries what the operator needs to come back: the search,
         // and the machine it is still computing on.
         let local = local(OWNED, "", Some(3));
@@ -2042,7 +2042,7 @@ mod tests {
         );
 
         // A far search that survived even termination fails the migration, and the
-        // teardown that destroys the machine it is on searches on that path too.
+        // teardown that destroys the machine it is on runs on that path too.
         let unkillable = Scripted::new()
             .stubborn()
             .delivering(vec![vec![started(&search), committed("aa")]]);

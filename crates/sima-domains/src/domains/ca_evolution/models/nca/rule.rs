@@ -129,7 +129,7 @@ mod tests {
     }
 
     /// Executor fixtures driving the real [`CaExecutor<Nca, WgslEngine>`]: the
-    /// `on_device` tests search the async kernel through the seed and step buffers
+    /// `on_device` tests run the async kernel through the seed and step buffers
     /// exactly as a live search does, and the device-free tests beside them
     /// exercise the executor's validation of a stepped input state before any
     /// GPU work. Neither touches a store.
@@ -265,7 +265,7 @@ mod tests {
             use super::*;
 
             #[test]
-            fn repeated_runs_are_byte_identical() {
+            fn repeated_executions_are_byte_identical() {
                 // The async mask is deterministic in (seed, cell, step), so two searches
                 // of the same task commit byte-identical framed states.
                 let exec = CaExecutor::<Nca, WgslEngine>::new(None).expect("executor");
@@ -297,7 +297,7 @@ mod tests {
             }
 
             #[test]
-            fn a_smoke_run_yields_a_finite_grid() {
+            fn a_smoke_execution_yields_a_finite_grid() {
                 // A small scale keeps the residual dynamics bounded over a few steps,
                 // so every committed value is finite; the framed step equals the step
                 // count over an 8-channel grid.

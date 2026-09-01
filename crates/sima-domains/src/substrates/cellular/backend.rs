@@ -3,7 +3,7 @@
 //!
 //! One engine parameterized by the adapter, so the device is opened, the
 //! kernels are built, the uniform and seed buffers are packed, and the
-//! reduction is search in exactly one place whatever backend answers.
+//! reduction is run in exactly one place whatever backend answers.
 //! `WgslEngine` and `CudaEngine` name two instantiations of it.
 
 use sima_contracts::{DeviceBinding, DeviceInfo};

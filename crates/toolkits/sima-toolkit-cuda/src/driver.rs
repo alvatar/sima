@@ -23,12 +23,12 @@ fn driver_library() -> Option<&'static libloading::Library> {
     static LIBRARY: OnceLock<Option<libloading::Library>> = OnceLock::new();
     LIBRARY
         .get_or_init(|| {
-            // The same candidate names `cudarc` searches, in the same order, so
+            // The same candidate names `cudarc` tries, in the same order, so
             // the probe answers exactly whether `cudarc` will find the library.
             ["cuda", "nvcuda"]
                 .into_iter()
                 .flat_map(cudarc::get_lib_name_candidates)
-                // SAFETY: opening the platform CUDA driver library searches its
+                // SAFETY: opening the platform CUDA driver library runs its
                 // initializers; the handle is never unloaded, so nothing can
                 // observe it disappearing.
                 .find_map(|name| unsafe { libloading::Library::new(name) }.ok())
@@ -49,7 +49,7 @@ pub(crate) fn initialize() -> Result<()> {
 }
 
 /// Runs `query` against an initialized driver, resolving to `None` on a machine
-/// where CUDA cannot search instead of an error.
+/// where CUDA cannot run instead of an error.
 ///
 /// Two states mean no CUDA device can exist here: the driver library is absent,
 /// and `cuInit` refuses. `cuInit` has no single defined answer for "nothing is
@@ -99,8 +99,8 @@ mod tests {
     #[test]
     fn a_machine_without_a_usable_driver_resolves_to_none() -> Result<()> {
         // The probe answers for whatever this machine has: with no usable CUDA
-        // driver the query never searches and the answer is None, and with one the
-        // query searches and its value comes back. Neither is an error, which is
+        // driver the query never runs and the answer is None, and with one the
+        // query runs and its value comes back. Neither is an error, which is
         // what the enumeration path relies on.
         let ran = with_driver_or_none(|| Ok(7))?;
         match ran {

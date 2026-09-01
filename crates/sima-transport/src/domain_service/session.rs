@@ -3,7 +3,7 @@
 //!
 //! The program is spawned once, in its domain-service role, and answers every
 //! question the search asks about its format: what environment its results depend
-//! on, what devices its work searches on, how its configuration translates, and
+//! on, what devices its work runs on, how its configuration translates, and
 //! what specs its generators produce. Holding the session open is what lets a
 //! program pay its startup cost once.
 //!
@@ -75,7 +75,7 @@ impl DomainService {
         DomainService::converse(command, scratch, binary.to_path_buf(), answer_timeout)
     }
 
-    /// Spawns the domain service `argv` searches and completes the same handshake.
+    /// Spawns the domain service named by `argv` and completes the same handshake.
     ///
     /// The argv already carries the role and the format, because the program it
     /// reaches is on another machine and something wraps it to get there — an
@@ -84,7 +84,7 @@ impl DomainService {
     /// nothing is appended here.
     ///
     /// The environment is the caller's own, for the same reason: what the
-    /// program sees is decided where it actually searches, not in this process.
+    /// program sees is decided where it actually runs, not in this process.
     pub fn spawn_argv(argv: &[String], answer_timeout: Duration) -> Result<DomainService> {
         let (program, args) = argv.split_first().ok_or_else(|| {
             Error::Transport("a domain-service argv names no program".to_string())
@@ -162,7 +162,7 @@ impl DomainService {
         }
     }
 
-    /// The devices the format's work can search on.
+    /// The devices the format's work can run on.
     pub fn enumerate_devices(&mut self, format: &FormatId) -> Result<Vec<DeviceInfo>> {
         match self.ask(
             &ToDomain::EnumerateDevices {
@@ -340,7 +340,7 @@ impl DomainService {
     /// answer deadline where it states one, and a fixed few seconds otherwise.
     ///
     /// A session with no deadline is one whose questions may take as long as
-    /// the program lives; the farewell still needs a bound, because it searches
+    /// the program lives; the farewell still needs a bound, because it runs
     /// where a search is being torn down.
     fn farewell_bound(&self) -> Duration {
         bounded_farewell(self.answer_timeout)
@@ -354,7 +354,7 @@ impl Drop for DomainService {
     /// scratch directory go last, once nothing is left running in it.
     ///
     /// The wait is bounded because a program that ignores its closed stdin
-    /// would otherwise hold this drop forever — and this drop searches on the
+    /// would otherwise hold this drop forever — and this drop runs on the
     /// thread tearing a search down, so a program that will not leave would keep
     /// the process alive after the search ended. Past the bound it is killed and
     /// reaped, which is what frees the scratch directory too.
@@ -516,7 +516,7 @@ mod tests {
 
     #[test]
     fn a_program_that_ignores_its_closed_stdin_is_killed_within_the_bound() {
-        // The drop searches on the thread tearing a search down, so a program that
+        // The drop runs on the thread tearing a search down, so a program that
         // will not leave must not hold it: past the bound it is killed and
         // reaped. `sleep` ignores its stdin entirely, which is exactly the
         // shape that used to hang.

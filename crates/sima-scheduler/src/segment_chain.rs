@@ -222,7 +222,7 @@ impl TaskSource for SegmentChain<'_> {
             let Some(&i) = self.chain_of.get(key) else {
                 continue;
             };
-            // A handed-out frontier committed: re-search the fast-forward step,
+            // A handed-out frontier committed: repeat the fast-forward step,
             // which also skips any successors the store already answers (a
             // fixed point or cross-search reuse).
             self.chains[i].advance(

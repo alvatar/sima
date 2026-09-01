@@ -10,7 +10,7 @@ use crate::task_source::{RunnableTask, TaskSource, generate_specs};
 /// A task source over a fixed batch of candidates. On construction it
 /// materializes the frontier: it generates the search's specs, stores each spec
 /// object, derives every task identity, and separates the tasks the store
-/// already answers from those still to search. The frontier is a pure function of
+/// already answers from those still to run. The frontier is a pure function of
 /// `(config, environment)`, so it is identical across fresh stores. Resume is
 /// this same construction — every start re-derives the full task set from
 /// `(config, environment)` and skips the keys the store already answers, with
@@ -27,9 +27,9 @@ pub struct StaticBatch {
 }
 
 impl StaticBatch {
-    /// Materializes the batch: searches `generator` under `config`, stores each
+    /// Materializes the batch: runs `generator` under `config`, stores each
     /// spec object, builds each task identity against `environment`, and
-    /// filters out the keys `store` already answers so a resume searches only the
+    /// filters out the keys `store` already answers so a resume runs only the
     /// unfinished work.
     pub fn new(
         generator: &dyn Generator,

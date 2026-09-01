@@ -40,7 +40,7 @@ fn the_gray_scott_cuda_example_loads_with_its_search_id() -> Result<()> {
 }
 
 #[test]
-fn the_two_examples_are_different_runs() -> Result<()> {
+fn the_two_examples_are_different_searches() -> Result<()> {
     // The same rule through two backends is two programs with two identities,
     // so neither reuses the other's stored results.
     assert_ne!(
@@ -52,7 +52,7 @@ fn the_two_examples_are_different_runs() -> Result<()> {
 
 #[test]
 fn every_example_carries_a_worker_layout_and_declares_no_machine_it_does_not_use() -> Result<()> {
-    // A reader who copies an example and searches it must get a search that executes:
+    // A reader who copies an example and runs it must get a search that executes:
     // the orchestrator states a layout, so `sima search` needs no flag. Every
     // machine beyond this one is commented out, so nothing is declared that the
     // example does not use.
@@ -131,7 +131,7 @@ fn the_stepper_example_loads_with_its_search_id() -> Result<()> {
     // the load vends the package the entry names before it spawns anything.
     //
     // The spawn is what makes this a load test and a path test at once: a
-    // program searches in a scratch working directory of its own, so a binary named
+    // program runs in a scratch working directory of its own, so a binary named
     // relative to this process would resolve against that directory and fail to
     // spawn at all.
     assert_eq!(

@@ -10,7 +10,7 @@
 //!   the domain service, through the same contracts a program outside the
 //!   workspace is written against.
 //! - under `--enumerate-devices <format>`, it prints the devices that format's
-//!   work can search on and exits; under `--enumerate-devices` alone, every device
+//!   work can run on and exits; under `--enumerate-devices` alone, every device
 //!   every compiled backend reaches, which states that the machine is up and
 //!   what hardware it has.
 //!
@@ -47,10 +47,10 @@ fn resolver(
 ///
 /// The two forms answer two questions:
 ///
-/// - `Some(format)` — the devices the program bound to that format can search on.
+/// - `Some(format)` — the devices the program bound to that format can run on.
 ///   The format selects the backend to ask, so the answer is where this search's
 ///   work can be placed rather than every device present; a machine commonly
-///   has devices only one backend reaches. The orchestrator searches this over ssh
+///   has devices only one backend reaches. The orchestrator runs this over ssh
 ///   at search start to resolve a remote's device selectors.
 /// - `None` — every device every compiled backend reaches. The readiness probe
 ///   for a search whose format is a program outside this build: nothing here can
@@ -70,7 +70,7 @@ fn enumerate_devices(format: Option<&str>) -> Result<()> {
 }
 
 /// Answers the domain service for `format` over stdin/stdout: what its
-/// environment is, what devices its work searches on, how its configuration
+/// environment is, what devices its work runs on, how its configuration
 /// translates, and what specs its generators produce.
 ///
 /// The in-tree formats are reached through the same two contracts a program
@@ -89,7 +89,7 @@ fn serve_domain(format: &FormatId) -> Result<()> {
 /// with a stderr line on a protocol refusal or a serve error.
 fn main() {
     // The one-shot enumeration probe: no protocol, no store, no orphan
-    // protection — enumerate, print, exit. It searches before anything else so a
+    // protection — enumerate, print, exit. It runs before anything else so a
     // probe never spawns the handshake machinery. A format id following the
     // flag decides which backend is asked; without one, every backend is.
     let mut args = std::env::args().skip_while(|arg| arg != "--enumerate-devices");
@@ -115,7 +115,7 @@ fn main() {
         std::process::exit(1);
     }
     // The domain-service role: one session for the search, answering what a
-    // format binds. It searches under the same orphan protection as a worker,
+    // format binds. It runs under the same orphan protection as a worker,
     // its session being just as long-lived.
     let role = match Role::from_args(std::env::args()) {
         Ok(role) => role,

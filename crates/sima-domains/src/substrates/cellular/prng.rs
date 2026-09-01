@@ -117,7 +117,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     mod on_device {
         use super::*;
 
-        /// Proves the WGSL PRNG equals [`sima_core::prng`] bit-for-bit: it searches
+        /// Proves the WGSL PRNG equals [`sima_core::prng`] bit-for-bit: it runs
         /// `prng_next`/`prng_derive` on the GPU for a spread of inputs, including the
         /// three published known answers, and compares every 64-bit result against
         /// the CPU implementation and the pinned values.

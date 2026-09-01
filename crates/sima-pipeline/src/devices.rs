@@ -18,7 +18,7 @@ pub struct DeviceSelector {
     /// A case-insensitive substring of the device's reported name, or the
     /// exact class its execution backend minted.
     pub select: String,
-    /// Worker processes to search on the selected device.
+    /// Worker processes to run on the selected device.
     pub workers: usize,
 }
 

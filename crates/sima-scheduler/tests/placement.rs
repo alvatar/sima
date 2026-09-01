@@ -70,7 +70,7 @@ fn a_chains_segments_agree_with_the_class_its_slot_records() -> Result<()> {
 }
 
 #[test]
-fn every_chain_binds_to_a_class_the_run_has() -> Result<()> {
+fn every_chain_binds_to_a_class_the_search_has() -> Result<()> {
     // Eight single-segment chains over two classes: every chain ends up with a
     // durable binding to one of the search's classes. Which class takes which
     // chain is a race — that is what greedy placement is — so the assertion is
@@ -100,7 +100,7 @@ fn every_chain_binds_to_a_class_the_run_has() -> Result<()> {
 }
 
 #[test]
-fn a_chain_whose_class_is_gone_rebinds_and_the_run_completes() -> Result<()> {
+fn a_chain_whose_class_is_gone_rebinds_and_the_search_completes() -> Result<()> {
     // The hardware changed between sessions: the store holds a binding to a
     // class this search does not have. Continuity outranks stickiness — the work
     // moves to a class that is present, and the journal says so.
@@ -137,8 +137,8 @@ fn a_chain_whose_class_is_gone_rebinds_and_the_run_completes() -> Result<()> {
 
 #[test]
 fn a_chain_resumed_from_its_slot_stays_on_its_class() -> Result<()> {
-    // The binding is durable: a chain seeded to a class the search still has searches
-    // there, with no rebind, whatever else the pool is doing.
+    // The binding is durable: a chain seeded to a class the search still has runs
+    // on that class, with no rebind, whatever else the pool is doing.
     let (_dir, store) = temp_store();
     let config = chained_config(13, vec![StubBehavior::Accumulate(2)], 3);
     let search = search_id(&config);

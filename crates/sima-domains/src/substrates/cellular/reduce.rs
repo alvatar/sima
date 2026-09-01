@@ -4,7 +4,7 @@
 //! Each backend ships its own transcription of the kernel — four compute passes
 //! dispatched in order over the same fixed partition topology — and
 //! [`CellularOps::REDUCE_SOURCE`] names it. [`ReduceKernels`] builds the four
-//! passes once per engine and [`reduce`] searches them over the two live ping-pong
+//! passes once per engine and [`reduce`] runs them over the two live ping-pong
 //! buffers a [`search`](super::search) left resident. The scalars are named as the
 //! reporting layer expects: `c<i>.mean`, `c<i>.var`, `c<i>.min`, `c<i>.max` per
 //! channel, then `population` and `activity`.
@@ -303,7 +303,7 @@ mod tests {
 
     /// Reducing a grid dispatches the reduction passes, which needs a real
     /// device. The reduction is one implementation, so each case is written
-    /// once over the ops boundary and search against both backends.
+    /// once over the ops boundary and run against both backends.
     mod on_device {
         use std::collections::HashMap;
 
@@ -499,7 +499,7 @@ mod tests {
 
         #[test]
         fn the_reduction_reads_the_harness_resident_pair() {
-            // The reduction searches over the two ping-pong buffers `search` leaves
+            // The reduction runs over the two ping-pong buffers `search` leaves
             // resident, not synthetic uploads, so `Trajectory::previous`
             // ($G_{N-1}$) is exercised end to end. A kernel that raises every
             // cell to its neighborhood max over a grid that is already a

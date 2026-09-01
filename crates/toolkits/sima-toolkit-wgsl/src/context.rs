@@ -179,7 +179,7 @@ impl Context {
         }
         .map_err(|e| Error::Backend(format!("begin command buffer: {e}")))?;
         recorder(command_buffer);
-        // SAFETY: the buffer is recording after `begin` and the recorder has search,
+        // SAFETY: the buffer is recording after `begin` and the recorder has run,
         // so ending it into the executable state is legal.
         unsafe { self.device.end_command_buffer(command_buffer) }
             .map_err(|e| Error::Backend(format!("end command buffer: {e}")))?;

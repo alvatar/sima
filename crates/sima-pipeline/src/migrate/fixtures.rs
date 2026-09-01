@@ -110,7 +110,7 @@ pub(crate) const PULL: Step = Step::Sync(Scope::Referenced);
 /// Its far search is alive from the start (or from a preset, for a reattach)
 /// until the feed delivers a terminal record or the wind-down signals it —
 /// which is what a real `sima search` does — unless it is stubborn, in which
-/// case it never exits and the wind-down's wait searches out on it.
+/// case it never exits and the wind-down's wait runs out on it.
 pub(crate) struct Scripted<'a> {
     devices: Vec<DeviceInfo>,
     /// The far-side search's pid while it is alive.
@@ -682,7 +682,7 @@ pub(crate) fn local(machine: &str, bounds: &str, committed: Option<usize>) -> Lo
 pub(crate) const RENTED: &str = "provider = \"stub\"";
 /// The declaration of a machine of yours.
 pub(crate) const OWNED: &str = "workers = 1";
-/// Readiness bounds a wind-down searches through without sleeping.
+/// Readiness bounds a wind-down runs through without sleeping.
 pub(crate) const PROMPT: &str = "ready_timeout_ms = 200\nready_poll_ms = 1";
 
 /// A second store holding the same search, driven `committed` segments in —

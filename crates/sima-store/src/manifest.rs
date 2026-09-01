@@ -2,7 +2,7 @@
 //!
 //! The manifest is the object every equality-based acceptance criterion
 //! compares, so its bytes are canonicalized: pretty-printed 2-space JSON,
-//! trailing newline, entries strictly ascending by task key. Serde searches
+//! trailing newline, entries strictly ascending by task key. Serde runs
 //! on a private hex-string mirror; conversion to the typed form is where
 //! validation lives. The manifest is human-readable index data,
 //! serialized with serde, and is never identity-bearing.
@@ -68,36 +68,38 @@ pub(crate) fn to_json_bytes(manifest: &Manifest) -> Vec<u8> {
     text.into_bytes()
 }
 
-/// Parses and validates manifest bytes read from `dir_run`'s directory.
+/// Parses and validates manifest bytes read from `dir_search`'s directory.
 /// Malformed JSON, bad hex, unsorted or duplicate entries, and a `search`
 /// field disagreeing with the directory are all [`Error::Corruption`] —
 /// the file contradicts what the store wrote.
-pub(crate) fn from_json_bytes(bytes: &[u8], dir_run: &SearchId) -> Result<Manifest> {
+pub(crate) fn from_json_bytes(bytes: &[u8], dir_search: &SearchId) -> Result<Manifest> {
     let mirror: ManifestJson = serde_json::from_slice(bytes).map_err(|e| {
-        Error::Corruption(format!("manifest for search {dir_run} does not parse: {e}"))
+        Error::Corruption(format!(
+            "manifest for search {dir_search} does not parse: {e}"
+        ))
     })?;
     let search = SearchId::from_hex(&mirror.search).map_err(|_| {
         Error::Corruption(format!(
-            "manifest for search {dir_run} names a malformed search id {:?}",
+            "manifest for search {dir_search} names a malformed search id {:?}",
             mirror.search
         ))
     })?;
-    if search != *dir_run {
+    if search != *dir_search {
         return Err(Error::Corruption(format!(
-            "manifest under search {dir_run} names search {search}"
+            "manifest under search {dir_search} names search {search}"
         )));
     }
     let mut entries = Vec::with_capacity(mirror.entries.len());
     for entry in &mirror.entries {
         let task = TaskKey::from_hex(&entry.task).map_err(|_| {
             Error::Corruption(format!(
-                "manifest for search {dir_run} holds a malformed task key {:?}",
+                "manifest for search {dir_search} holds a malformed task key {:?}",
                 entry.task
             ))
         })?;
         let record = Hash::from_hex(&entry.record).map_err(|_| {
             Error::Corruption(format!(
-                "manifest for search {dir_run} holds a malformed record hash {:?}",
+                "manifest for search {dir_search} holds a malformed record hash {:?}",
                 entry.record
             ))
         })?;
@@ -105,7 +107,7 @@ pub(crate) fn from_json_bytes(bytes: &[u8], dir_run: &SearchId) -> Result<Manife
             && prev >= task
         {
             return Err(Error::Corruption(format!(
-                "manifest for search {dir_run} entries out of order: {prev} then {task}"
+                "manifest for search {dir_search} entries out of order: {prev} then {task}"
             )));
         }
         entries.push(ManifestEntry { task, record });
@@ -153,7 +155,7 @@ mod tests {
     }
 
     #[test]
-    fn a_run_field_disagreeing_with_the_directory_is_corruption() -> Result<()> {
+    fn a_search_field_disagreeing_with_the_directory_is_corruption() -> Result<()> {
         let manifest = sample_manifest()?;
         let bytes = to_json_bytes(&manifest);
         let other = SearchId::from_hash(hash_bytes(b"a different search"));

@@ -33,7 +33,7 @@ pub struct WorkerId(pub u64);
 pub struct TaskInput<'a> {
     /// The candidate under evaluation (resolved bytes, not just its id).
     pub spec: &'a Spec,
-    /// The search parameters the evaluation searches under.
+    /// The search parameters the evaluation runs under.
     pub params: &'a Params,
     /// The task's deterministic seed.
     pub seed: u64,
@@ -87,7 +87,7 @@ pub struct Stats {
 
 impl Stats {
     /// Stats carrying nothing: no scalars, an empty blob. The degraded result
-    /// when even the reduction over a failed attempt could not search.
+    /// when even the reduction over a failed attempt could not run.
     pub fn empty() -> Stats {
         Stats {
             scalars: Vec::new(),

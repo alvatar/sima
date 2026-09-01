@@ -1,4 +1,4 @@
-//! [`RentedProgram`]: what a rented machine searches for a search, and everything that
+//! [`RentedProgram`]: what a rented machine runs for a search, and everything that
 //! follows from it.
 //!
 //! A rented machine is asked four things between being acquired and serving its
@@ -23,7 +23,7 @@ use sima_transport::{
 
 use crate::program_delivery::{ProgramDelivery, programs_dir};
 
-/// What a rented machine searches for one search.
+/// What a rented machine runs for one search.
 ///
 /// The image's own worker for a format this build carries: nothing is delivered
 /// there, its readiness probe asks about the format, and its workers answer no
@@ -37,7 +37,7 @@ pub(crate) enum RentedProgram<'a> {
     Delivered {
         /// What the search sends.
         delivery: &'a ProgramDelivery,
-        /// The `sima` on that machine, which searches the delivery's far half.
+        /// The `sima` on that machine, which runs the delivery's far half.
         binary: &'a str,
         /// Where that machine keeps what searches deliver to it.
         root: &'a str,
@@ -61,7 +61,7 @@ impl RentedProgram<'_> {
     /// Puts what the search needs on the machine, once it has answered.
     ///
     /// Nothing for a format the image carries. Otherwise the payload's objects
-    /// and the SDK's, followed by the install the far half searches — after which
+    /// and the SDK's, followed by the install the far half runs — after which
     /// the machine holds a stamped tree its workers are spawned out of.
     pub(crate) fn install(
         &self,
@@ -125,7 +125,7 @@ impl RentedProgram<'_> {
         }
     }
 
-    /// How one of the machine's workers is spawned: what to search there, and the
+    /// How one of the machine's workers is spawned: what to run there, and the
     /// settings it is greeted under.
     ///
     /// Over ssh the spawn is a shell on that machine, and sima's process here

@@ -31,7 +31,7 @@ fn spawn_run(config: &Path) -> Child {
 /// exhausting the attempts fails the search with the definitive-failure exit
 /// code.
 #[test]
-fn preemption_kills_an_overrunning_attempt_and_exhausts_the_run() {
+fn preemption_kills_an_overrunning_attempt_and_exhausts_the_search() {
     let dir = tempfile::tempdir().expect("temp dir");
     let text = r#"
         [search]
@@ -194,7 +194,7 @@ fn an_externally_killed_worker_converges_to_the_reference_manifest() {
 /// released the search lock, and a resumed search converges to the reference
 /// manifest.
 #[test]
-fn workers_die_with_their_parent_and_the_run_resumes() {
+fn workers_die_with_their_parent_and_the_search_resumes() {
     let dir = tempfile::tempdir().expect("temp dir");
 
     // Sleeps far longer than the orphan deadline below, so a child that

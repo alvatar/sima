@@ -81,7 +81,7 @@ pub use sima_store::SpendEntry;
 pub use searches::{SearchSummary, searches};
 pub use sima_model::SearchId;
 pub use sima_store::RemovalReport;
-// The scheduler types a caller drives and observes searches through, re-exported
+// The scheduler types through which a caller drives and observes a search, re-exported
 // so the CLI consumes one coherent surface.
 pub use sima_scheduler::{Event, LIVENESS_INTERVAL, Level, Record, SearchControl, SearchOutcome};
 pub use status::{Occupancy, SearchState, SearchStatus, seeded_status, status, status_records};

@@ -1,5 +1,5 @@
 //! End-to-end acceptance of the `ca_evolution` domain's Gray-Scott model through
-//! the pipeline API: a `ca_evolution.gray_scott` `sima.toml` searches generate →
+//! the pipeline API: a `ca_evolution.gray_scott` `sima.toml` runs generate →
 //! execute → commit → inspect to a finalized manifest, a segment boundary leaves
 //! the committed trajectory byte-identical, and a malformed `[search.params]`
 //! section fails at load — before any store or GPU work.
@@ -151,7 +151,7 @@ fn the_shipped_search_config_loads() -> Result<()> {
 // The variants below each enable one commented group of the example and load
 // the result, so every knob the file ships is parsed by a test rather than only
 // read by a human. The `[domain."<format>"]` block is in no variant: the binary
-// it names is spawned when the config loads, so enabling it would search a program.
+// it names is spawned when the config loads, so enabling it would run a program.
 
 #[test]
 fn the_shipped_search_config_loads_with_the_snapshot_predicate_enabled() -> Result<()> {

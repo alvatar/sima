@@ -55,10 +55,10 @@ pub enum IncidentKind {
     /// readiness timeout, including one that went `Gone` while provisioning.
     NeverReady,
     /// A machine that reported ready but failed the ssh worker probe, so it
-    /// cannot search work.
+    /// cannot run work.
     ProbeFailed,
     /// A machine that answered but could not be given the program the search's
-    /// format is routed to — the delivery or the install it searches failed — so it
+    /// format is routed to — the delivery or the install it runs failed — so it
     /// can serve no worker for this search.
     InstallFailed,
 }

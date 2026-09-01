@@ -215,7 +215,7 @@ mod tests {
             matches!(reported, Err(Error::Validation(_))),
             "{reported:?}"
         );
-        // The merge searches over records from any source, local or streamed from
+        // The merge runs over records from any source, local or streamed from
         // another host, so its message states the fact and suggests no
         // command: a command naming a config path resolves on the machine that
         // reads it, which is where the records came from only half the time.
@@ -242,7 +242,7 @@ mod tests {
     }
 
     #[test]
-    fn a_run_never_started_is_a_validation_error() -> Result<()> {
+    fn a_search_never_started_is_a_validation_error() -> Result<()> {
         let dir = tempfile::tempdir().expect("temp dir");
         Store::open(dir.path())?;
         let config = loaded(dir.path().to_path_buf())?;

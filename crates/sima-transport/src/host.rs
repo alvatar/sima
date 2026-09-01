@@ -1,7 +1,7 @@
 //! The child side of the transport: [`serve`] hosts a domain executor over a
 //! frame pipe.
 //!
-//! `serve` is what a worker process searches for its whole life: read the
+//! `serve` is what a worker process runs for its whole life: read the
 //! [`Hello`](super::protocol::Hello), resolve the executor for the announced
 //! format and device, reply [`ToParent::Ready`], then execute one
 //! [`Assignment`](super::protocol::Assignment) after another until the parent
@@ -521,7 +521,7 @@ mod tests {
         }
     }
 
-    /// Frames `messages` into one input buffer, searches `serve` over it with a
+    /// Frames `messages` into one input buffer, runs `serve` over it with a
     /// `behavior` executor, and returns serve's result plus the decoded
     /// output frames.
     fn drive(behavior: Behavior, messages: &[ToChild]) -> (Result<()>, Vec<ToParent>) {

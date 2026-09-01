@@ -185,7 +185,7 @@ const SENT: &str = "111111111111111111111111111111111111111111111111111111111111
 const HELD: &str = "2222222222222222222222222222222222222222222222222222222222222222";
 
 #[test]
-fn a_worker_answering_the_digest_the_run_sent_binds() {
+fn a_worker_answering_the_digest_the_search_sent_binds() {
     let answered = spawn_expecting(Some(SENT), SENT).expect("the agreement holds");
     assert_eq!(
         answered, SENT,
@@ -211,7 +211,7 @@ fn a_worker_holding_another_program_fails_the_spawn_naming_both_digests() {
 }
 
 #[test]
-fn a_worker_naming_a_program_the_run_never_sent_fails_the_spawn() {
+fn a_worker_naming_a_program_the_search_never_sent_fails_the_spawn() {
     // The symmetric direction: a search answering for its format in process sent
     // no program at all, so a worker that names one is not the one it spawned.
     let error = spawn_expecting(None, HELD).expect_err("a program disagreement");
@@ -473,7 +473,7 @@ fn probe(format: &str) -> Vec<serde_json::Value> {
 
 #[test]
 fn the_enumerate_probe_answers_per_format_rather_than_per_machine() {
-    // A device list is a claim about what a program can search on. The stub
+    // A device list is a claim about what a program can run on. The stub
     // computes in the worker process and opens no device, so it enumerates
     // none however much hardware this machine has — and the orchestrator reads
     // that as a deviceless worker rather than as a bare host.
@@ -618,7 +618,7 @@ mod on_device {
     #[test]
     fn the_enumerate_probe_prints_one_json_line_per_device() {
         // The remote-resolution probe: `--enumerate-devices <format>` prints the devices
-        // that format's program can search on as JSON, one per line, and exits zero.
+        // that format's program can run on as JSON, one per line, and exits zero.
         assert!(
             !probe("ca_evolution.gray_scott.v1").is_empty(),
             "this machine has a Vulkan device"

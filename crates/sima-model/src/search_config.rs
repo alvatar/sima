@@ -1,7 +1,7 @@
-//! Run configuration and search identity: the identity-bearing portion of a
+//! Search configuration and search identity: the identity-bearing portion of a
 //! search's configuration, whose canonical bytes define the search id.
 //!
-//! Run identity is the hash of canonicalized config. Execution knobs —
+//! Search identity is the hash of canonicalized config. Execution knobs —
 //! worker count, store path, backends — live in a separate, non-identity
 //! configuration section in higher layers: a search resumed with different
 //! parallelism or on different hardware keeps its search id. The environment

@@ -23,7 +23,7 @@ pub(crate) trait CellularRule {
 ///
 /// It is the substrate's own kernel rather than a model's, so a harness test
 /// exercises the dispatch convention without depending on any domain, and the
-/// two transcriptions let one test case search on either backend.
+/// two transcriptions let one test case run on either backend.
 pub(crate) const SMOKE_WGSL: &str = include_str!("wgsl/shaders/smoke.wgsl");
 pub(crate) const SMOKE_PTX: &str = include_str!("cuda/kernels/smoke.ptx");
 

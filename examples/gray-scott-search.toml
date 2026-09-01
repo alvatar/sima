@@ -44,14 +44,14 @@ max_attempts = 3
 # checkpoint_interval_ms    = 30000       # wall-clock checkpoint cadence
 # checkpoint_interval_steps = 500         # step-count cadence, >= 1
 
-# This machine. Its workers search as plain subprocesses unless it names an image,
-# in which case they search in a container here.
+# This machine. Its workers run as plain subprocesses unless it names an image,
+# in which case they run in a container here.
 [orchestrator]
 workers = 2
 # migrate  = "cloudbox"                  # the host `sima migrate` moves the search onto
-# image    = "localhost/sima:latest"      # search this machine's workers in a container
+# image    = "localhost/sima:latest"      # run this machine's workers in a container
 # runtime  = "podman"                     # docker | podman; default docker, needs an image
-# run_args = ["--device", "/dev/dri"]     # verbatim container-search flags, needs an image
+# run_args = ["--device", "/dev/dri"]     # verbatim container-run flags, needs an image
 
 # Device tables replace `workers` and are exclusive with it; the pool is their
 # sum, and each `select` is a case-insensitive substring of the device name or
@@ -60,14 +60,14 @@ workers = 2
 # select  = "nvidia"
 # workers = 2
 
-# A machine you have, reached over ssh at the entry's own name. Its workers search
+# A machine you have, reached over ssh at the entry's own name. Its workers run
 # in a container, so two lines is a whole declaration.
 # [host.gpubox]
 # workers  = 4                            # exclusive with the device table below
 # ssh      = "user@10.0.0.5"              # override the address
 # image    = "localhost/sima:latest"      # default as shown
 # runtime  = "podman"                     # docker | podman; default docker
-# run_args = ["--gpus", "all"]            # verbatim container-search flags
+# run_args = ["--gpus", "all"]            # verbatim container-run flags
 # root     = "~/sima"                # where a migrated search lives here; default as shown
 # binary   = "sima"                       # the sima binary here; default as shown
 
@@ -112,7 +112,7 @@ workers = 2
 
 # Several machines rented to one specification. `fill` decides what a partial
 # acquisition means: strict fails the search unless the full count is acquired,
-# best-effort searches on whatever came up.
+# best-effort runs on whatever came up.
 # [host_class.rtx4090]
 # provider = "vast"
 # count    = 4
@@ -143,7 +143,7 @@ workers = 2
 
 # A format answered by a program of its own rather than by this build. sima
 # spawns the binary when the config loads and asks it what the format binds,
-# which is why the block ships commented: enabling it searches a program.
+# which is why the block ships commented: enabling it runs a program.
 # [domain."ca_evolution.gray_scott.v1"]
 # binary = "/opt/acme/worker"             # resolved against this file's directory
 # env    = ["ACME_ASSETS"]                # variable names it receives on top of

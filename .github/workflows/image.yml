@@ -39,7 +39,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Tagged with the commit as well as `latest`, so a run that needs to be
+      # Tagged with the commit as well as `latest`, so a search that needs to be
       # reproduced can name the image it actually used.
       - uses: docker/build-push-action@v6
         with:

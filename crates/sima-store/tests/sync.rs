@@ -243,7 +243,7 @@ fn a_named_object_outside_the_records_references_still_travels() -> Result<()> {
     let (_da, a, keys) = store_with(&[1]);
     let (_db, b) = empty_store();
     // Bytes nothing in the search references — the shape a program's payload
-    // takes, which the far side needs before it can search anything at all.
+    // takes, which the far side needs before it can run anything at all.
     let unreferenced = a.put(b"the program this search is served by")?;
     let referenced = *a.record(&keys[0])?.expect("committed").artifacts()[0].object();
 
