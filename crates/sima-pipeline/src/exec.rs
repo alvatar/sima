@@ -265,7 +265,7 @@ enum SessionOutcome {
 }
 
 fn start(
-    far: &RemoteExec,
+    far: &dyn FarExec,
     store: &Store,
     config: &ExecConfig,
     fetch_to: &Path,
@@ -313,7 +313,7 @@ fn start(
 }
 
 fn attach(
-    far: &RemoteExec,
+    far: &dyn FarExec,
     store: &Store,
     config: &ExecConfig,
     fetch_to: &Path,
@@ -334,7 +334,7 @@ fn attach(
 }
 
 fn end(
-    far: &RemoteExec,
+    far: &dyn FarExec,
     config: &ExecConfig,
     fetch_to: &Path,
     observer: &mut dyn ExecObserver,
@@ -359,7 +359,7 @@ fn end(
 }
 
 fn follow_to_outcome(
-    far: &RemoteExec,
+    far: &dyn FarExec,
     store: &Store,
     config: &ExecConfig,
     fetch_to: &Path,
@@ -431,6 +431,37 @@ enum Followed {
     Exhausted(Exhaustion),
 }
 
+/// The remote operations the exec choreography depends on. The production
+/// implementation speaks through a [`Reach`]; tests can drive the same state
+/// transitions without a process or network.
+trait FarExec {
+    /// The command state recorded in the remote job tree.
+    fn state(&self) -> Result<RemoteState>;
+    /// Whether the configured sima binary resolves on the remote host.
+    fn binary_present(&self) -> Result<bool>;
+    /// Uploads the static sima artifact.
+    fn bootstrap_sima(&self) -> Result<()>;
+    /// Delivers and installs one payload.
+    fn deliver(&self, store: &Store, delivery: &ExecDelivery) -> Result<()>;
+    /// Starts the opaque command detached.
+    fn start(&self, command: &str) -> Result<u32>;
+    /// Replays and follows the remote log through command completion.
+    fn follow(
+        &self,
+        store: &Store,
+        owner: SearchId,
+        budget: &sima_provider::Budget,
+        interrupt: &AtomicBool,
+        observer: &mut dyn ExecObserver,
+    ) -> Result<Followed>;
+    /// Kills the detached command's process group.
+    fn kill(&self, pid: u32) -> Result<()>;
+    /// Waits until the detached command is absent.
+    fn wait_gone(&self, pid: u32) -> Result<()>;
+    /// Fetches declared outputs and the command log.
+    fn fetch(&self, outputs: &[String], local: &Path) -> Result<()>;
+}
+
 /// Ends and reaps the local log transport while leaving the detached remote
 /// command untouched. The reader owns the transport's stdout, so closing the
 /// process precedes joining it.
@@ -491,7 +522,9 @@ impl RemoteExec {
         String::from_utf8(output.stdout)
             .map_err(|e| Error::Transport(format!("remote output is not UTF-8: {e}")))
     }
+}
 
+impl FarExec for RemoteExec {
     fn state(&self) -> Result<RemoteState> {
         let output = self.shell(&format!(
             "job={}\npid=$(cat \"$job/exec.pid\" 2>/dev/null || true)\nif [ -f \"$job/exec.status\" ]; then echo finished:$(cat \"$job/exec.status\"); elif [ -n \"$pid\" ] && kill -0 \"$pid\" 2>/dev/null; then echo running:$pid; else echo idle; fi\n",
@@ -724,6 +757,7 @@ impl RemoteExec {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::{Cell, RefCell};
     use std::fs;
     use std::sync::{Mutex, PoisonError};
 
@@ -742,6 +776,78 @@ mod tests {
 
         fn narration(&mut self, line: &str) {
             self.narration.push(line.to_string());
+        }
+    }
+
+    struct ChoreographyDouble {
+        calls: RefCell<Vec<&'static str>>,
+        state: Cell<RemoteState>,
+    }
+
+    impl ChoreographyDouble {
+        fn idle() -> ChoreographyDouble {
+            ChoreographyDouble {
+                calls: RefCell::new(Vec::new()),
+                state: Cell::new(RemoteState::Idle),
+            }
+        }
+    }
+
+    impl FarExec for ChoreographyDouble {
+        fn state(&self) -> Result<RemoteState> {
+            self.calls.borrow_mut().push("state");
+            Ok(self.state.get())
+        }
+
+        fn binary_present(&self) -> Result<bool> {
+            self.calls.borrow_mut().push("binary_present");
+            Ok(true)
+        }
+
+        fn bootstrap_sima(&self) -> Result<()> {
+            self.calls.borrow_mut().push("bootstrap_sima");
+            Ok(())
+        }
+
+        fn deliver(&self, _store: &Store, _delivery: &ExecDelivery) -> Result<()> {
+            self.calls.borrow_mut().push("deliver");
+            Ok(())
+        }
+
+        fn start(&self, _command: &str) -> Result<u32> {
+            self.calls.borrow_mut().push("start");
+            self.state.set(RemoteState::Running(42));
+            Ok(42)
+        }
+
+        fn follow(
+            &self,
+            _store: &Store,
+            _owner: SearchId,
+            _budget: &sima_provider::Budget,
+            _interrupt: &AtomicBool,
+            observer: &mut dyn ExecObserver,
+        ) -> Result<Followed> {
+            self.calls.borrow_mut().push("follow");
+            observer.command("remote line");
+            self.state.set(RemoteState::Finished(7));
+            Ok(Followed::Completed(7))
+        }
+
+        fn kill(&self, _pid: u32) -> Result<()> {
+            self.calls.borrow_mut().push("kill");
+            self.state.set(RemoteState::Finished(137));
+            Ok(())
+        }
+
+        fn wait_gone(&self, _pid: u32) -> Result<()> {
+            self.calls.borrow_mut().push("wait_gone");
+            Ok(())
+        }
+
+        fn fetch(&self, _outputs: &[String], _local: &Path) -> Result<()> {
+            self.calls.borrow_mut().push("fetch");
+            Ok(())
         }
     }
 
@@ -813,6 +919,42 @@ mod tests {
             far.root,
             format!("~/sima/exec/{}", &owner.to_string()[..16])
         );
+    }
+
+    #[test]
+    fn start_choreography_runs_through_the_far_side_boundary() -> Result<()> {
+        let dir = tempfile::tempdir().expect("job");
+        let path = job_config(dir.path(), "opaque command");
+        let config = load_exec(&path)?;
+        let store = Store::open(&config.store)?;
+        let far = ChoreographyDouble::idle();
+        let mut recording = Recording::default();
+        let outcome = start(
+            &far,
+            &store,
+            &config,
+            &config.fetch_to,
+            false,
+            &AtomicBool::new(false),
+            &mut recording,
+        )?;
+        assert!(matches!(
+            outcome,
+            SessionOutcome::Keep(ExecOutcome::Completed(7))
+        ));
+        assert_eq!(recording.command, ["remote line"]);
+        assert_eq!(
+            *far.calls.borrow(),
+            [
+                "state",
+                "binary_present",
+                "deliver",
+                "start",
+                "follow",
+                "fetch",
+            ]
+        );
+        Ok(())
     }
 
     #[test]
