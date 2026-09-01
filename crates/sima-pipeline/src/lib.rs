@@ -58,7 +58,7 @@ pub use config::{
 };
 pub use devices::DeviceSelector;
 pub use domain_registry::DomainRegistry;
-pub use exec::{ExecAction, ExecObserver, ExecOptions, ExecOutcome, exec};
+pub use exec::{ExecAction, ExecObserver, ExecOptions, ExecOutcome, exec, exec_instance_line};
 pub use feed::{
     FOLLOW_PROTOCOL_VERSION, FeedInfo, FollowFrame, LocalFeed, RemoteFeed, SearchFeed,
     follow_serve, local_snapshot, remote_snapshot,

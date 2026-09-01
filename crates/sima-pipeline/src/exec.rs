@@ -15,7 +15,7 @@ use sima_core::{Error, Result, hash_bytes, own_process_group};
 use sima_model::SearchId;
 use sima_provider::{
     AcquireLimits, Admission, Exhaustion, InstanceGuard, Objective, Provider, Verdict, acquire,
-    adopt, assess, never_cancelled, now_ms,
+    adopt, assess, is_acquisition_cancelled, never_cancelled, now_ms,
 };
 use sima_store::{Rental, Store};
 
@@ -74,12 +74,17 @@ pub trait ExecObserver {
     fn narration(&mut self, line: &str);
     /// The machine adopted or acquired for this invocation.
     fn instance(&mut self, id: &str, rate_microusd_hour: u64, adopted: bool) {
-        self.narration(&format!(
-            "{} instance {id} at ${:.6}/hr",
-            if adopted { "adopted" } else { "acquired" },
-            rate_microusd_hour as f64 / 1_000_000.0
-        ));
+        self.narration(&exec_instance_line(id, rate_microusd_hour, adopted));
     }
+}
+
+/// Formats the machine line shared by exec observers.
+pub fn exec_instance_line(id: &str, rate_microusd_hour: u64, adopted: bool) -> String {
+    format!(
+        "{} instance {id} at ${:.6}/hr",
+        if adopted { "adopted" } else { "acquired" },
+        rate_microusd_hour as f64 / 1_000_000.0
+    )
 }
 
 /// Runs one exec invocation from `config_path`.
@@ -169,10 +174,10 @@ fn run(
                     sima_provider::UNREPORTED,
                 ) {
                     Ok(guard) => Some(guard),
-                    Err(Error::Provider(message))
+                    Err(error)
                         if one_shot
                             && interrupt.load(Ordering::Relaxed)
-                            && message == "the acquisition was cancelled" =>
+                            && is_acquisition_cancelled(&error) =>
                     {
                         return Ok(ExecOutcome::Abandoned { kept: false });
                     }
@@ -190,26 +195,6 @@ fn run(
     );
     let far = RemoteExec::new(reach, &config.host.root, &owner);
     let fetch_to = options.fetch_to.as_ref().unwrap_or(&config.fetch_to);
-    if let ExecAction::Start { one_shot } = options.action {
-        match far.state() {
-            Ok(RemoteState::Running(_)) => {
-                guard.keep();
-                return Err(Error::Validation(
-                    "an exec command is already running; use --attach to watch it or --end to stop it"
-                        .to_string(),
-                ));
-            }
-            Ok(_) => {}
-            Err(error) => {
-                if one_shot {
-                    guard.release()?;
-                } else {
-                    guard.keep();
-                }
-                return Err(error);
-            }
-        }
-    }
     let session = match options.action {
         ExecAction::Attach => attach(&far, &store, &config, fetch_to, interrupt, observer),
         ExecAction::End => end(&far, &config, fetch_to, observer),
@@ -277,10 +262,10 @@ fn start(
     observer: &mut dyn ExecObserver,
 ) -> Result<SessionOutcome> {
     if matches!(far.state()?, RemoteState::Running(_)) {
-        return Err(Error::Validation(
+        return Ok(SessionOutcome::KeepError(Error::Validation(
             "an exec command is already running; use --attach to watch it or --end to stop it"
                 .to_string(),
-        ));
+        )));
     }
     if interrupt.load(Ordering::Relaxed) {
         return Ok(if one_shot {
@@ -577,7 +562,7 @@ impl FarExec for RemoteExec {
         Ok(self
             .shell(&format!(
                 "command -v {} >/dev/null 2>&1 && echo yes\nexit 0\n",
-                self.reach.binary()
+                remote_path_word(&self.reach.binary())
             ))?
             .trim()
             == "yes")
@@ -954,6 +939,30 @@ mod tests {
             "\"$HOME\"/'bin/sima special'"
         );
         assert_eq!(remote_path_word("/opt/sima special"), "'/opt/sima special'");
+    }
+
+    #[test]
+    fn binary_probe_quotes_a_path_with_spaces() -> Result<()> {
+        let dir = tempfile::tempdir().expect("binary root");
+        let bin = dir.path().join("bin space");
+        fs::create_dir(&bin).expect("binary directory");
+        let binary = bin.join("sima");
+        std::os::unix::fs::symlink("/bin/true", &binary).expect("binary link");
+        let far = RemoteExec::new(Reach::Here(binary), "unused", &owner_id("bench"));
+        assert!(far.binary_present()?);
+        Ok(())
+    }
+
+    #[test]
+    fn instance_line_has_one_shared_format() {
+        assert_eq!(
+            exec_instance_line("instance-1", 123_456, false),
+            "acquired instance instance-1 at $0.123456/hr"
+        );
+        assert_eq!(
+            exec_instance_line("instance-1", 123_456, true),
+            "adopted instance instance-1 at $0.123456/hr"
+        );
     }
 
     #[test]
@@ -1389,7 +1398,7 @@ mod tests {
     }
 
     #[test]
-    fn plain_start_refuses_a_running_command_and_interrupt_detaches() -> Result<()> {
+    fn every_start_refuses_a_running_command_and_keeps_the_instance() -> Result<()> {
         let dir = tempfile::tempdir().expect("job");
         let path = job_config(dir.path(), "sleep 30");
         let config = load_exec(&path)?;
@@ -1397,21 +1406,25 @@ mod tests {
         let pid = far.start("echo begun; sleep 30")?;
         let store = Store::open(&config.store)?;
         let mut recording = Recording::default();
-        let error = start(
-            &far,
-            &store,
-            &config,
-            &config.fetch_to,
-            false,
-            &AtomicBool::new(false),
-            &mut recording,
-        )
-        .expect_err("plain invocation refuses a running command");
-        let message = error.to_string();
-        assert!(
-            message.contains("--attach") && message.contains("--end"),
-            "{message}"
-        );
+        for one_shot in [false, true] {
+            let outcome = start(
+                &far,
+                &store,
+                &config,
+                &config.fetch_to,
+                one_shot,
+                &AtomicBool::new(false),
+                &mut recording,
+            )?;
+            let SessionOutcome::KeepError(error) = outcome else {
+                panic!("a running command must keep its instance");
+            };
+            let message = error.to_string();
+            assert!(
+                message.contains("--attach") && message.contains("--end"),
+                "{message}"
+            );
+        }
         let outcome = attach(
             &far,
             &store,
