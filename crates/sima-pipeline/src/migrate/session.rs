@@ -349,7 +349,7 @@ fn hold<'a>(
         usable_by,
         ready_poll: spec.ready_poll,
     };
-    if let Some(guard) = adopt(provider, store, lock, &limits)? {
+    if let Some(guard) = adopt(provider, store, lock, RentalRole::Orchestrator, &limits)? {
         return Ok(guard);
     }
     acquire(
