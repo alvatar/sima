@@ -2812,7 +2812,7 @@ mod tests {
             fs::write(&path, text).expect("rewrite config");
             let message = load_exec(&path).expect_err("unknown exec key").to_string();
             assert!(
-                message.contains(key.split_whitespace().next().unwrap()),
+                message.contains(key.split_whitespace().next().expect("the key name")),
                 "{message}"
             );
         }
@@ -2887,8 +2887,12 @@ mod tests {
                     .split("        [config]")
                     .nth(1)
                     .map(|tail| format!("[config]{tail}"))
-                    .unwrap(),
-                "config" => BASE.split("        [config]").next().unwrap().to_string(),
+                    .expect("the base config section"),
+                "config" => BASE
+                    .split("        [config]")
+                    .next()
+                    .expect("the base search section")
+                    .to_string(),
                 _ => unreachable!(),
             };
             let message = load_text(&text).expect_err("required section").to_string();
@@ -2921,7 +2925,7 @@ mod tests {
             let text = format!("{BASE}\n[host.owned]\nworkers = 1\n{key}\n");
             let message = rejection(&text);
             assert!(
-                message.contains(key.split_whitespace().next().unwrap()),
+                message.contains(key.split_whitespace().next().expect("the key name")),
                 "{message}"
             );
             assert!(message.contains("machine of yours"), "{message}");
