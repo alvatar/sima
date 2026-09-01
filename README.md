@@ -54,6 +54,14 @@ beyond it as an elastic, heterogeneous extension.
   computing, and re-running attaches to it again. `sima recall` is what winds it
   down and brings the results home; the manifest a migrated search writes is
   byte-identical to one that never left.
+- **Run one command on rented hardware.** An `[exec]` job names one opaque shell
+  command, a payload, output globs, and one rented `[host.*]`. `sima exec`
+  delivers the payload, streams the command's log, and fetches the declared
+  files plus the log on every exit. The machine stays available by default:
+  another invocation adopts it, `--attach` follows a detached command, and
+  `--end` fetches and releases it. `--one-shot` releases it after one command.
+  The store is limited to rental accounting and payload objects for this
+  contract; search state remains exclusive to a search.
 - **Watch it run, from anywhere.** `sima tui` drives a search in a full-screen
   live view and `sima follow` streams its events to a pipe; `sima status` and
   `sima report` print search state and per-candidate stats. Every one of them

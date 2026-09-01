@@ -21,16 +21,18 @@
 //! is constructed and no rental credential is read. `migrate` moves the whole
 //! search — its store and its orchestrator — onto the one machine
 //! `[orchestrator].migrate` names, and brings the results back.
+//! `exec` is the separate command contract: one opaque `[exec].command` on
+//! one rented `[host.*]`, with its log and declared output files fetched home.
+//! It uses the store only for rental accounting and payload objects.
 //!
 //! A search through a program a `[domain.*]` entry names stops when that
 //! program's build changed since the search last ran; `--accept-binary` is the
 //! invocation stating that the changed build should drive it anyway.
 //!
-//! `search`, `migrate`, and `recall` render a search's stream as it happens, and
-//! `--quiet` narrows that to the search's own progress: what it is, what it
-//! started, what it committed, how it ended, and anything gone wrong. The
-//! lines it drops say where a placement has got to, which is for an operator
-//! watching one rather than for whatever reads the output of a script.
+//! `search`, `exec`, `migrate`, and `recall` render a live stream. On a search
+//! command, `--quiet` narrows that to the search's own progress and errors. On
+//! an exec, it leaves only the remote command's lines. The lines it drops state
+//! orchestration progress for an operator watching the placement.
 //!
 //! `sdk` writes the SDK this binary carries into a directory, which is how a
 //! program is developed against the package the searches that spawn it vend.
@@ -39,11 +41,15 @@
 //! renders output, registers the interrupt flag, and maps outcomes to exit
 //! codes:
 //!
-//! - 0 — the search finalized (or `status` answered);
+//! - 0 — the search finalized, a query answered, or an exec detached;
 //! - 2 — a definitive candidate failure;
 //! - 130 — interrupted by Ctrl-C, store resumable;
 //! - 1 — everything else: infrastructure fault, config error, usage error, and
 //!   a `migrate` that came home with tasks outstanding.
+//!
+//! A completed exec instead returns its remote command's exit code verbatim;
+//! code 1 can therefore mean either the command or sima failed, and the
+//! diagnostic text distinguishes them.
 
 mod follow;
 mod migrate;

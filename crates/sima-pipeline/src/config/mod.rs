@@ -30,6 +30,14 @@
 //! checkpoint_interval_ms    = 30000       # optional; wall-clock cadence
 //! checkpoint_interval_steps = 500         # optional; step cadence, >= 1
 //!
+//! [exec]                                  # one opaque command on one rental
+//! host     = "cloudbox"                    # a rented [host.*] entry
+//! command  = "cargo test --release"        # interpreted by the remote shell
+//! payload  = "."                           # file or directory, resolved here
+//! install  = "./ci/install-remote.sh"      # required for a directory payload
+//! outputs  = ["reports/*.html", "*.pfm"]   # globs at the payload tree root
+//! fetch_to = "exec-outputs"                # optional; default as shown
+//!
 //! [host.gpubox]                           # reached at "gpubox"; image and runtime default
 //! # ssh      = "user@10.0.0.5"            # override the address
 //! # image    = "localhost/sima:latest"    # default as shown
@@ -48,10 +56,14 @@
 //!
 //! [host.cloudbox]                        # one rented machine: a host, not a class
 //! provider = "vast"
+//! image    = "nvidia/cuda:12.4.1-devel-ubuntu22.04"
+//! bootstrap_sima = true                  # upload sima-static when binary is absent
 //! disk_gb  = 64
+//! env = { NVIDIA_DRIVER_CAPABILITIES = "all" }
 //! [host.cloudbox.constraints]
 //! gpu_models  = ["RTX 4090"]
 //! min_vram_mb = 16000
+//! min_cuda    = 12.0
 //!
 //! [host_class.lab]                        # lab1 … lab6; raise count to grow
 //! count   = 6
@@ -188,6 +200,27 @@
 //! start. Every other config states its layout, as the refusal for one that
 //! states neither says.
 //!
+//! ## Exec jobs
+//!
+//! An `[exec]` section declares one opaque remote shell command. Its `host`
+//! names one rented `[host.*]` entry; owned hosts and host classes belong to
+//! other contracts. `payload` and `install` follow the same path and manifest
+//! rules as a domain payload. The command starts at the payload tree root, so
+//! any working-directory change or environment assignment belongs in the
+//! command string.
+//!
+//! `outputs` are remote shell globs anchored at that root. They and `exec.log`
+//! are unpacked beneath `fetch_to`, which resolves against the config file and
+//! defaults to `exec-outputs`. The payload tree is mutable: manifest files are
+//! refreshed on a changed digest while untracked build caches remain. The
+//! install script runs once per payload digest, before the command starts.
+//!
+//! A file may declare both `[search]` and `[exec]`. Search commands require
+//! `[search]` and `[config]`; `sima exec` requires `[exec]` and derives the
+//! default store beside the file when `[config]` is absent. For an exec, the
+//! store holds the rental and spend ledgers plus the payload object cache.
+//! Search journals, tasks, manifests, and catalog entries belong to a search.
+//!
 //! ## Addressing
 //!
 //! The entry's name is its ssh destination unless `ssh` says otherwise, so a
@@ -219,8 +252,10 @@
 //! | `provider` | no | yes | `vast` or `stub` |
 //! | `fill` | no | class only | `strict` or `best-effort`, default `strict` |
 //! | `disk_gb` | no | yes | provisioned disk |
+//! | `env` | no | yes | environment assigned when the provider creates the instance |
+//! | `bootstrap_sima` | no | yes | allow exec to upload `sima-static` when `binary` is absent |
 //! | `ready_timeout_ms`, `ready_poll_ms` | no | yes | readiness bounds |
-//! | `[….constraints]` | no | yes | offer constraints |
+//! | `[….constraints]` | no | yes | offer constraints, including `min_cuda` |
 //! | `root` | yes | yes | where a migrated search lives on that machine, and where its `programs/` directory holds what searches deliver there |
 //! | `binary` | yes | yes | the `sima` binary on that machine |
 //!
@@ -235,15 +270,17 @@
 //! `runtime` and `run_args` describe the container `image` names, so both are
 //! rejected without one.
 //!
-//! `[budget]` is search-global: a search may draw on several rented classes under one
-//! ceiling, so the ceiling is a property of the search. Its two keys differ in
-//! where they are kept:
+//! `[budget]` bounds the rentals owned by one config contract. A search may
+//! draw on several rented classes under one ceiling; an exec applies it to its
+//! single standing rental. Its two keys differ in where they are enforced:
 //!
-//! - `max_spend_usd` bounds what the search's rentals cost, and enforcing it means
-//!   destroying a machine — a provider-API call, which needs the credential
-//!   that never leaves this machine. It is therefore assessed only while
-//!   something here is attached, and a section stating it alone is inert to a
-//!   search that rents nothing.
+//! - `max_spend_usd` bounds what the contract's rentals cost, and enforcing it
+//!   means destroying a machine — a provider-API call, which needs the
+//!   credential that stays on this machine. It is therefore assessed only
+//!   while something here is attached, and a section stating it alone is inert
+//!   to a search that rents nothing.
+//!   An attached exec assesses the same bound every ten seconds; detaching
+//!   leaves assessment to a later attach, `--end`, or reconciliation.
 //! - `max_wall_clock_ms` bounds how long the search may compute, measured from the
 //!   start of each execution, and `0` states no ceiling at all — the same as
 //!   omitting the key. It is kept where no bill runs against the time it
@@ -252,6 +289,8 @@
 //!   travel to a rented destination, because a rental bills by the hour rather
 //!   than by use — a search stopped early there saves nothing, and the machine
 //!   bills on until `sima recall` or `sima reconcile` takes it down.
+//!   An exec assesses this bound with the spend bound while attached, anchored
+//!   at the job owner's first rental.
 //!
 //! ## What a search uses
 //!
