@@ -190,6 +190,7 @@ pub(super) struct ConstraintsSection {
     pub(super) gpu_models: Vec<String>,
     pub(super) min_gpu_count: Option<u32>,
     pub(super) min_vram_mb: Option<u64>,
+    pub(super) min_cuda: Option<f64>,
     pub(super) max_price_usd_hour: Option<f64>,
     pub(super) min_reliability: Option<f64>,
     #[serde(default)]

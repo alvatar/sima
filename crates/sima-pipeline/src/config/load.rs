@@ -1330,6 +1330,7 @@ mod tests {
             gpu_models = ["RTX 4090"]
             min_gpu_count = 1
             min_vram_mb = 16000
+            min_cuda = 12.0
             max_price_usd_hour = 0.5
             min_reliability = 0.95
             verified_only = true
@@ -1347,6 +1348,7 @@ mod tests {
         assert_eq!(rented.constraints.gpu_models, vec!["RTX 4090".to_string()]);
         assert_eq!(rented.constraints.min_gpu_count, Some(1));
         assert_eq!(rented.constraints.min_vram_mb, Some(16000));
+        assert_eq!(rented.constraints.min_cuda, Some(12.0));
         // The dollar rate converts to a micro-USD price.
         assert_eq!(rented.constraints.max_price, Some(Price(500_000)));
         assert_eq!(rented.constraints.min_reliability, Some(0.95));

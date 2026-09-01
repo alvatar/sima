@@ -120,6 +120,7 @@ pub(super) fn offer(id: &str, price: u64) -> Offer {
         gpu_model: "stub-gpu".to_string(),
         gpu_count: 1,
         vram_mb: 24_000,
+        cuda: 99.0,
         price: Price(price),
         reliability: 1.0,
         verified: true,

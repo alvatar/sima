@@ -742,6 +742,7 @@ pub(crate) fn marketplace() -> StubProvider {
         gpu_model: "stub-gpu".to_string(),
         gpu_count: 1,
         vram_mb: 24_000,
+        cuda: 99.0,
         price: sima_provider::Price(100_000),
         reliability: 1.0,
         verified: true,

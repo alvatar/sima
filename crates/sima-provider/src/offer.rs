@@ -40,6 +40,9 @@ pub struct Offer {
     pub gpu_count: u32,
     /// VRAM per GPU, in megabytes.
     pub vram_mb: u64,
+    /// Highest CUDA level the host driver reports as supported. Zero means
+    /// the provider reports none.
+    pub cuda: f64,
     /// The hourly rate.
     pub price: Price,
     /// Provider-reported host reliability, in `[0, 1]`. This describes trust
@@ -69,6 +72,8 @@ pub struct Constraints {
     pub min_gpu_count: Option<u32>,
     /// Least VRAM per GPU, in megabytes.
     pub min_vram_mb: Option<u64>,
+    /// Least CUDA level the host driver must report as supported.
+    pub min_cuda: Option<f64>,
     /// Highest hourly rate that qualifies.
     pub max_price: Option<Price>,
     /// Least provider-reported reliability.
@@ -128,6 +133,7 @@ fn qualifies(offer: &Offer, constraints: &Constraints) -> bool {
     let minimums = [
         at_least(offer.gpu_count, constraints.min_gpu_count),
         at_least(offer.vram_mb, constraints.min_vram_mb),
+        at_least(offer.cuda, constraints.min_cuda),
         at_least(offer.disk_gb, constraints.min_disk_gb),
         at_least(offer.bandwidth_mbps, constraints.min_bandwidth_mbps),
         at_least(offer.reliability, constraints.min_reliability),
@@ -167,6 +173,7 @@ mod tests {
             gpu_model: "RTX 4090".to_string(),
             gpu_count: 2,
             vram_mb: 24_576,
+            cuda: 12.4,
             price: Price(500_000),
             reliability: 0.99,
             verified: true,
@@ -191,6 +198,7 @@ mod tests {
                 gpu_model: "GTX 1080".to_string(),
                 gpu_count: 1,
                 vram_mb: 8_192,
+                cuda: 0.0,
                 reliability: 0.1,
                 verified: false,
                 disk_gb: 10,
@@ -237,6 +245,29 @@ mod tests {
             ..Constraints::default()
         };
         assert_eq!(ranked(offers, &constraints), vec!["large"]);
+    }
+
+    #[test]
+    fn min_cuda_disqualifies_lower_and_unreported_versions_and_admits_the_boundary() {
+        let offers = vec![
+            Offer {
+                cuda: 11.8,
+                ..offer("lower")
+            },
+            Offer {
+                cuda: 0.0,
+                ..offer("unreported")
+            },
+            Offer {
+                cuda: 12.0,
+                ..offer("boundary")
+            },
+        ];
+        let constraints = Constraints {
+            min_cuda: Some(12.0),
+            ..Constraints::default()
+        };
+        assert_eq!(ranked(offers, &constraints), vec!["boundary"]);
     }
 
     #[test]

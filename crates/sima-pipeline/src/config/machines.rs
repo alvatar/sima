@@ -687,6 +687,7 @@ fn resolve_rented(path: &Path, subject: &str, section: MachineSection) -> Result
             gpu_models: constraints_section.gpu_models,
             min_gpu_count: constraints_section.min_gpu_count,
             min_vram_mb: constraints_section.min_vram_mb,
+            min_cuda: constraints_section.min_cuda,
             max_price,
             min_reliability: constraints_section.min_reliability,
             verified_only: constraints_section.verified_only,
