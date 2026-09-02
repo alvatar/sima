@@ -1264,6 +1264,78 @@ fn sigint_interrupts_gracefully_and_running_again_matches_an_uninterrupted_store
     );
 }
 
+/// Asserts that `signal` winds a running search down and leaves resumable state.
+fn terminating_signal_interrupts_gracefully(signal: libc::c_int) {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let config = write_config(
+        dir.path(),
+        r#""sleep:800", "sleep:800", "sleep:800", "sleep:800""#,
+    );
+    let path = config.to_str().expect("utf-8 path");
+    let mut child = sima_command()
+        .args(["search", path])
+        .stdout(std::process::Stdio::null())
+        .spawn()
+        .expect("spawn sima search");
+    assert!(
+        common::wait_for_first_lease(&config, Duration::from_secs(30)),
+        "the search leased a task before the interrupt"
+    );
+    assert_eq!(unsafe { libc::kill(child.id() as libc::pid_t, signal) }, 0);
+    assert_eq!(
+        child.wait().expect("wait for sima").code(),
+        Some(130),
+        "graceful interrupt exits 130"
+    );
+    assert!(manifest_of(&config).is_none(), "no manifest yet");
+
+    let resumed = sima(&["search", path]);
+    assert_eq!(resumed.status.code(), Some(0), "{resumed:?}");
+}
+
+#[test]
+fn sigterm_interrupts_gracefully_and_leaves_a_resumable_store() {
+    terminating_signal_interrupts_gracefully(libc::SIGTERM);
+}
+
+#[test]
+fn sighup_interrupts_gracefully_and_leaves_a_resumable_store() {
+    terminating_signal_interrupts_gracefully(libc::SIGHUP);
+}
+
+#[test]
+fn a_second_sigterm_uses_the_default_termination() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let config = write_config(
+        dir.path(),
+        r#""sleep:5000", "sleep:5000", "sleep:5000", "sleep:5000""#,
+    );
+    let mut child = sima_command()
+        .args(["search", config.to_str().expect("utf-8 path")])
+        .stdout(std::process::Stdio::null())
+        .spawn()
+        .expect("spawn sima search");
+    assert!(
+        common::wait_for_first_lease(&config, Duration::from_secs(30)),
+        "the search leased a task before the interrupt"
+    );
+    assert_eq!(
+        unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGTERM) },
+        0
+    );
+    std::thread::sleep(Duration::from_millis(50));
+    assert!(
+        child.try_wait().expect("probe the interrupted search").is_none(),
+        "the first SIGTERM starts graceful wind-down"
+    );
+    assert_eq!(
+        unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGTERM) },
+        0
+    );
+    let output = common::wait_within(child, Duration::from_secs(30));
+    assert_ne!(output.status.code(), Some(130));
+}
+
 #[test]
 fn a_terminal_interrupt_winds_the_search_down_without_killing_its_workers() {
     // A terminal delivers Ctrl-C to every process in the foreground group, so
