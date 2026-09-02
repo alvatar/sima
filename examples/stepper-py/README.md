@@ -26,14 +26,13 @@ the destination installs it at load, and the results come home to this store.
 The program travels as the payload and the SDK travels inside the `sima`
 binary, so the destination needs nothing installed beyond sima itself.
 
-Turning that on takes two declarations, both commented out in `search.toml`: an
-`[orchestrator] migrate` key naming the destination, and the `[host.<name>]`
-entry with that machine's connection details.
+Two declarations in `search.toml` turn that on: the `[orchestrator] migrate`
+key naming the destination, and the `[host.<name>]` entry with that machine's
+details.
 
-Spreading one search's tasks across several machines — `sima search --fleet` — is not
-available to a registered format: a worker elsewhere would need this program
-installed there, and nothing installs it. That workflow is available to the
-formats sima carries in process.
+`sima search search.toml --fleet` spreads the tasks across the `[fleet]`
+members instead: the same `payload` is delivered to each member and installed
+there, while the store and the orchestrator stay here.
 
 ## Running it
 

@@ -61,7 +61,7 @@ The Vulkan loader and the Mesa ICDs (Intel and AMD) are baked into the image.
 An Intel or AMD GPU is reached by passing the render node:
 
 ```
-podman run --rm -i --device /dev/dri localhost/sima:latest --enumerate <format>
+podman run --rm -i --device /dev/dri localhost/sima:latest --enumerate-devices <format>
 ```
 
 NVIDIA user-space libraries are not baked — they must match the host kernel
@@ -70,10 +70,10 @@ start through CDI:
 
 ```
 podman run --rm -i --device nvidia.com/gpu=all localhost/sima:latest \
-  --enumerate <format>
+  --enumerate-devices <format>
 ```
 
-`--enumerate` prints one JSON device per line and exits; it is the probe the
+`--enumerate-devices` prints one JSON device per line and exits; it is the probe the
 orchestrator runs to resolve a machine's device selectors. It takes the search's
 format id, because that names the execution backend to enumerate and a backend
 reaches only the devices its own driver stack exposes.
@@ -107,7 +107,7 @@ The registry copy is built and pushed by `.github/workflows/image.yml`, on a
 push that touches the image or its inputs and on demand with
 `gh workflow run image.yml`. It builds for `linux/amd64`, pushes to
 `ghcr.io/<owner>/sima`, and then checks the image it just pushed: both binaries
-present and executable, and `sima-worker --enumerate stub.v1` answering from
+present and executable, and `sima-worker --enumerate-devices stub.v1` answering from
 inside it. A published image that fails that check fails the workflow.
 
 CI publishing is preferred where it is available, because the registry copy is

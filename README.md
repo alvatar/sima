@@ -69,7 +69,8 @@ target/release/sima status examples/gray-scott-search --on gpubox
 target/release/sima report examples/gray-scott-search --spend # rental spend
 ```
 
-`TUTORIAL.md` walks a program through a complete search.
+`GUIDE.md` is the operational reference: commands, config keys, workflows,
+failures. `TUTORIAL.md` walks a program through a complete search.
 `containers/sima/README.md` covers the image rented machines run.
 
 ## How it works
