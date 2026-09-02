@@ -24,6 +24,12 @@ pub(super) fn resolve_execution(
     config: &ConfigSection,
     orchestrator: &Orchestrator,
 ) -> Result<ExecutionConfig> {
+    let max_attempts = config.max_attempts.ok_or_else(|| {
+        Error::Validation(format!(
+            "{}: [config] max_attempts is required",
+            path.display()
+        ))
+    })?;
     let attempt_timeout = optional_bound(config.attempt_timeout_ms);
     let checkpoint_interval = optional_bound(config.checkpoint_interval_ms);
     // The step cadence is optional and, when present, at least 1: a zero cadence
@@ -43,7 +49,7 @@ pub(super) fn resolve_execution(
     let workers = orchestrator.pool.as_ref().map_or(0, Pool::workers);
     ExecutionConfig::new(
         workers,
-        config.max_attempts,
+        max_attempts,
         attempt_timeout,
         optional_bound(config.answer_timeout_ms),
         checkpoint_interval,

@@ -1009,6 +1009,23 @@ mod tests {
     }
 
     #[test]
+    fn a_search_config_missing_max_attempts_names_the_file_and_key() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = write_config(
+            dir.path(),
+            "missing-attempts.toml",
+            &BASE.replace("        max_attempts = 3\n", ""),
+        );
+        let Err(Error::Validation(message)) = load(&path) else {
+            panic!("missing max_attempts must be a validation error");
+        };
+        assert_eq!(
+            message,
+            format!("{}: [config] max_attempts is required", path.display())
+        );
+    }
+
+    #[test]
     fn a_syntax_error_is_validation_naming_the_file() {
         let dir = tempfile::tempdir().expect("temp dir");
         let path = write_config(dir.path(), "broken.toml", "search = [not toml");
