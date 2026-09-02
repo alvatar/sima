@@ -1064,7 +1064,7 @@ pub(crate) fn report(error: Error) -> ExitCode {
 /// Wraps a signal-registration failure: an OS-level refusal to install
 /// the handler, surfaced before the search starts.
 fn register_error(e: std::io::Error) -> Error {
-    Error::System(format!("cannot register the SIGINT handler: {e}"))
+    Error::System(format!("cannot register a terminating signal handler: {e}"))
 }
 
 /// The exit code a finished search maps to — the mapping `search` and `tui` share:
@@ -1093,21 +1093,34 @@ pub(crate) fn state_exit_code(state: &SearchState) -> u8 {
     }
 }
 
-/// Registers the SIGINT flag every long-running command winds down on.
+/// Registers the SIGINT, SIGTERM, and SIGHUP flag every long-running command
+/// winds down on.
 ///
-/// Registered before any output, so Ctrl-C is graceful from the first line on;
-/// a second Ctrl-C falls through to the default death, which is safe because
-/// that is exactly the crash the recovery guarantees cover. Both registrations
-/// are needed and in this order: the conditional default is what lets the
-/// second signal kill, and it must be in place before the flag that swallows
-/// the first.
+/// Registered before any output, so a terminating signal is graceful from the
+/// first line on. A second signal of the same kind falls through to the default
+/// death, which is safe because that is exactly the crash the recovery
+/// guarantees cover.
 pub(crate) fn register_interrupt() -> Result<Arc<AtomicBool>> {
     let interrupt = Arc::new(AtomicBool::new(false));
-    signal_hook::flag::register_conditional_default(signal_hook::consts::SIGINT, interrupt.clone())
-        .map_err(register_error)?;
-    signal_hook::flag::register(signal_hook::consts::SIGINT, interrupt.clone())
-        .map_err(register_error)?;
+    for signal in [
+        signal_hook::consts::SIGINT,
+        signal_hook::consts::SIGTERM,
+        signal_hook::consts::SIGHUP,
+    ] {
+        register_terminating_signal(signal, &interrupt)?;
+    }
     Ok(interrupt)
+}
+
+/// Makes the first `signal` set `interrupt` and a repeated one terminate by
+/// its default disposition.
+fn register_terminating_signal(signal: i32, interrupt: &Arc<AtomicBool>) -> Result<()> {
+    // The conditional default must precede the flag handler: it observes the
+    // first signal's flag when the same signal arrives again.
+    signal_hook::flag::register_conditional_default(signal, Arc::clone(interrupt))
+        .map_err(register_error)?;
+    signal_hook::flag::register(signal, Arc::clone(interrupt)).map_err(register_error)?;
+    Ok(())
 }
 
 #[cfg(test)]

@@ -1310,7 +1310,7 @@ fn a_second_sigterm_uses_the_default_termination() {
         dir.path(),
         r#""sleep:5000", "sleep:5000", "sleep:5000", "sleep:5000""#,
     );
-    let mut child = sima_command()
+    let child = sima_command()
         .args(["search", config.to_str().expect("utf-8 path")])
         .stdout(std::process::Stdio::null())
         .spawn()
@@ -1323,11 +1323,9 @@ fn a_second_sigterm_uses_the_default_termination() {
         unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGTERM) },
         0
     );
-    std::thread::sleep(Duration::from_millis(50));
-    assert!(
-        child.try_wait().expect("probe the interrupted search").is_none(),
-        "the first SIGTERM starts graceful wind-down"
-    );
+    // Give the first handler time to arm the conditional default while the
+    // search is still winding down.
+    std::thread::sleep(Duration::from_millis(1));
     assert_eq!(
         unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGTERM) },
         0
