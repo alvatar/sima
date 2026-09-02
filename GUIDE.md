@@ -86,8 +86,8 @@ and exits 1.
 | `sima exec <config> --end` | Stop, fetch, destroy the instance. |
 | `sima exec <config> --fetch-to <dir>` | Fetch into `<dir>` relative to the current directory. |
 | `sima exec <config> --quiet` | Print only the remote command's output. |
-| `sima reconcile <config>` | Destroy machines a crashed search left running. Spares a migrated search's host. |
-| `sima reconcile <config> --hosted` | Also destroy the host of a migrated search. |
+| `sima reconcile <config>` | Destroy worker rentals recorded by any config's store. Spares hosted rentals. |
+| `sima reconcile <config> --hosted` | Also destroy hosted migration and exec rentals recorded by any config's store. |
 | `sima rm <config>` | Delete the search and what only it references. |
 | `sima rm <config> --search <id>` | Delete another search of the same store, by id prefix. |
 | `sima searches <store-dir>` | List the searches a store holds. |
@@ -106,7 +106,7 @@ that host.
 | 0 | Finalized, a query answered, a migration detached, an exec detached or ended. |
 | 1 | Config error, usage error, infrastructure fault, migrate or recall with tasks outstanding. |
 | 2 | Definitive candidate failure. |
-| 130 | Interrupted by Ctrl-C. Store resumable. |
+| 130 | Interrupted by Ctrl-C, SIGTERM, or SIGHUP. Store resumable. |
 | n | `sima exec`: the remote command's exit code verbatim. |
 
 ## Configuration
@@ -229,8 +229,8 @@ sima report examples/gray-scott-search.toml
 ```
 
 Output: `search <id>`, `started: N tasks`, one line per task start and
-commit, `finalized: N tasks committed`. Ctrl-C winds down with exit 130; the
-same command resumes.
+commit, `finalized: N tasks committed`. Ctrl-C, SIGTERM, or SIGHUP winds down
+with exit 130; the same command resumes.
 
 ### Bring your own program in Python
 
@@ -426,9 +426,13 @@ sima reconcile search.toml              # after any hard crash
   `installing the program cheap[0]`, then task lines.
 - `fill = "strict"` fails the search when a member is short; `best-effort`
   proceeds on survivors.
-- Ctrl-C during acquisition releases everything rented and exits 130.
+- Ctrl-C, SIGTERM, or SIGHUP during acquisition releases everything rented
+  and exits 130.
 - Rentals tear down at search end on every exit path except a hard crash.
 - Budget exhaustion acts as an interrupt: wind-down, teardown, store resumable.
+- A rental accepts the ssh keys registered on the vast account. ssh offers
+  them from your agent (`SSH_AUTH_SOCK`) or default identity files. sima
+  configures no key.
 - The ssh channel to a rental accepts whatever host key answers. Treat specs,
   params, and results as exposed to an active network attacker.
 
@@ -452,9 +456,10 @@ Phases printed: `renting`, `waiting for the machine to come up`,
 `sending the search: N objects`, `installing the program`,
 `starting the search`, `resuming: k/N committed`, then task lines.
 
-- Ctrl-C after `starting the search` detaches: exit 0, the far search keeps
-  computing, the rental keeps billing. Re-running `sima migrate` reattaches.
-- Ctrl-C before the start abandons: rental released, exit 130.
+- Ctrl-C, SIGTERM, or SIGHUP after `starting the search` detaches: exit 0, the
+  far search keeps computing, and the rental keeps billing. Re-running
+  `sima migrate` reattaches.
+- The same signals before the start abandon: rental released, exit 130.
 - `sima recall search.toml` winds the far search down, pulls results, destroys
   the rental. Exit 1 with tasks outstanding; `sima search` at home finishes them.
 - `sima migrate --accept-binary` when the payload changed since the far search
@@ -496,6 +501,7 @@ VAST_API_KEY=... sima exec ci.toml --one-shot      # run, fetch, destroy
   `--end`.
 - Phase output includes `waiting for the machine to answer` when the first
   contact is refused while the machine comes up.
+- Authentication follows the rental account-key rule above.
 - Budget is assessed only while attached. A detached command bills until an
   attach, `--end`, or `sima reconcile --hosted`.
 - `bootstrap_sima = true` uploads sima onto an image that lacks it. The upload
@@ -504,6 +510,11 @@ VAST_API_KEY=... sima exec ci.toml --one-shot      # run, fetch, destroy
   `target/release/sima-static`. Rebuild the artifact after any commit touching
   `crates/` or `Cargo.lock`. Without the flag on such an image, exec fails
   naming the key.
+- Bootstrap is verified on `nvidia/cuda:12.4.1-devel-ubuntu22.04`.
+  `nvidia/cuda:12.8.1-base-ubuntu24.04` rejects the account key.
+- After an instance is destroyed outside sima, `sima exec <config> --end`
+  clears its record and exits 0. `sima reconcile <config> --hosted` reaps a
+  detached exec rental.
 - The remote job tree is `<root>/exec/<owner16>/` with `payload/`, `exec.log`,
   `exec.pid`, `exec.status`. Untracked files such as build caches survive
   redelivery.
@@ -540,7 +551,7 @@ script), `SIMA_PROGRAM_DIGEST` (workers, echoed at handshake), `PYTHONPATH`.
 
 | Symptom | Cause | Remedy |
 |---|---|---|
-| `[search] section is required for this command` | Wrong verb for the file. | `sima exec` for `[exec]`, search verbs for `[search]`. |
+| `[search] section is required for this command` | A search-only verb received another config form. | `sima exec` for `[exec]`, search verbs for `[search]`; reconcile accepts either. |
 | Spawn of `./program.py` fails | `PATH` missing from `env`. | `env = ["PATH"]`. |
 | `sima search` refused after editing the program | Binary digest changed. | `--accept-binary`. |
 | Results unchanged after code change | Task keys ignore source. | Bump the environment component version. |
@@ -549,6 +560,8 @@ script), `SIMA_PROGRAM_DIGEST` (workers, echoed at handshake), `PYTHONPATH`.
 | Member short, search stopped | `fill = "strict"`. | `fill = "best-effort"` or fix constraints. |
 | `the remote image has no sima binary; set bootstrap_sima = true` | Specialized image. | Set the key and run `scripts/build-sima-static.sh`. |
 | `bootstrap_sima expects .../sima-static` | Artifact absent. | Run `scripts/build-sima-static.sh`; it places `target/release/sima-static`. |
+| `cannot reach <host>: Permission denied (publickey)` | The image did not install the account key, or the account has no registered key. | Use a verified image; check the account's keys. |
+| `cannot reach <host>: Connection refused` at the deadline | sshd did not come up within the readiness bound. | Raise `ready_timeout_ms` or change the image. |
 | `an exec command is already running` | Plain invocation over a running command. | `--attach` or `--end`. |
 | Machine still billing after crash | No code ran at death. | `sima reconcile <config>`; add `--hosted` if no migration is live. |
 | `cannot remove search ...: search not found` | Prefix names no search. | `sima searches <store>` for the id. |
