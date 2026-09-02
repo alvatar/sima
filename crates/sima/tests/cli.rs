@@ -1920,7 +1920,12 @@ fn reconcile_hosted_clears_an_exec_record_through_an_exec_config() {
         "--hosted",
     ]);
     assert_eq!(output.status.code(), Some(0), "{output:?}");
-    assert!(store.instance_records().expect("read the ledger").is_empty());
+    assert!(
+        store
+            .instance_records()
+            .expect("read the ledger")
+            .is_empty()
+    );
 }
 
 #[test]
@@ -1937,11 +1942,7 @@ fn loose_object_warning_accepts_an_exec_config() {
     let dir = tempfile::tempdir().expect("temp dir");
     let config = write_exec_config(dir.path());
     seed_loose_object_warning(&dir.path().join(".sima/store"));
-    let output = sima(&[
-        "exec",
-        config.to_str().expect("utf-8 path"),
-        "--end",
-    ]);
+    let output = sima(&["exec", config.to_str().expect("utf-8 path"), "--end"]);
     assert!(stderr(&output).contains("loose objects"), "{output:?}");
 }
 
