@@ -86,8 +86,8 @@ and exits 1.
 | `sima exec <config> --end` | Stop, fetch, destroy the instance. |
 | `sima exec <config> --fetch-to <dir>` | Fetch into `<dir>` relative to the current directory. |
 | `sima exec <config> --quiet` | Print only the remote command's output. |
-| `sima reconcile <config>` | Destroy worker rentals recorded by any config's store. Spares hosted rentals. |
-| `sima reconcile <config> --hosted` | Also destroy hosted migration and exec rentals recorded by any config's store. |
+| `sima reconcile <config>` | Destroy rentals a crashed run left, from any config form. Spares hosted rentals. |
+| `sima reconcile <config> --hosted` | Also destroy hosted migration and exec rentals. |
 | `sima rm <config>` | Delete the search and what only it references. |
 | `sima rm <config> --search <id>` | Delete another search of the same store, by id prefix. |
 | `sima searches <store-dir>` | List the searches a store holds. |
