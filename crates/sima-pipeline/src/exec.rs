@@ -277,8 +277,9 @@ fn contact_within(
                         now.saturating_duration_since(first) >= auth_grace
                     }
                     Refusal::Route => {
-                        // A route failure means sshd restarted, so a later
-                        // authentication refusal starts a fresh key grace.
+                        // A route failure after a refusal says sshd is gone;
+                        // if it comes back with the key, the next refusal
+                        // starts a fresh grace.
                         auth_refused_at = None;
                         false
                     }
