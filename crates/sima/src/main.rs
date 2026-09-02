@@ -69,7 +69,7 @@ use sima_pipeline::{
     BinaryChange, Engagement, ExecAction, ExecObserver, ExecOptions, ExecOutcome, FeedInfo,
     LoadedConfig, LocalFeed, Record, RemoteFeed, RemovalReport, ReportRow, Sdk, SearchControl,
     SearchFeed, SearchId, SearchOutcome, SearchState, SearchStatus, SearchTimeline, TaskHistory,
-    exec, exec_instance_line, failures_records, follow_serve, load, load_exec, local_snapshot,
+    exec, exec_instance_line, failures_records, follow_serve, load, load_store, local_snapshot,
     orchestrate, receive_exec_payload, receive_program, remote_snapshot, report_records,
     report_task_records, seeded_status, status_records, sync_serve, task_history_records,
     timeline_records,
@@ -110,7 +110,7 @@ fn main() -> ExitCode {
         && let [verb, config, ..] = args[..]
         && STORE_OPENING_VERBS.contains(&verb)
     {
-        warn_on_loose_objects(&resolve_config(config), verb);
+        warn_on_loose_objects(&resolve_config(config));
     }
     if host.is_none()
         && let Some((config, action, fetch_to)) = exec_form(&args)
@@ -1032,14 +1032,9 @@ fn searches_command(store: &Path) -> ExitCode {
 /// cannot be measured says nothing here, because the command itself is
 /// about to report whatever is wrong with far better context. A store that
 /// does not exist yet is left alone rather than opened, since opening one
-/// creates it and the query commands are read-only about that. `verb` selects
-/// the config contract, so an exec warning resolves no search program.
-fn warn_on_loose_objects(config: &Path, verb: &str) {
-    let store_path = match if verb == "exec" {
-        load_exec(config).map(|loaded| loaded.store)
-    } else {
-        load(config).map(|loaded| loaded.store)
-    } {
+/// creates it and the query commands are read-only about that.
+fn warn_on_loose_objects(config: &Path) {
+    let store_path = match load_store(config) {
         Ok(store) => store,
         Err(_) => return,
     };

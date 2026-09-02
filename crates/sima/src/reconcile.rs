@@ -21,7 +21,7 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use sima_core::Result;
-use sima_pipeline::load;
+use sima_pipeline::load_store;
 use sima_provider::{Provider, ReconcileReport, ReconcileScope, reconcile};
 use sima_store::Store;
 
@@ -29,8 +29,8 @@ use crate::report;
 
 /// `sima reconcile <config.toml> [--hosted]`: destroys the machines the
 /// config's store still holds records for, and prints what the pass did. The
-/// store comes from the config's `[config]` section, as the query commands
-/// derive it. Without `--hosted` a rental hosting a migrated search is spared.
+/// store comes from the config's shared store setting. Without `--hosted` a
+/// rental hosting a migrated search is spared.
 pub(crate) fn reconcile_command(config: &Path, scope: ReconcileScope) -> ExitCode {
     match clean_store(config, scope) {
         Ok(report) => {
@@ -44,7 +44,7 @@ pub(crate) fn reconcile_command(config: &Path, scope: ReconcileScope) -> ExitCod
 /// Loads the config, opens its store, and runs the pass over every provider
 /// the instance ledger names.
 fn clean_store(config: &Path, scope: ReconcileScope) -> Result<ReconcileReport> {
-    let store = Store::open(load(config)?.store)?;
+    let store = Store::open(load_store(config)?)?;
     clean(&store, backend, scope)
 }
 

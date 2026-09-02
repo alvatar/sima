@@ -54,7 +54,7 @@ fn seed_loose_object_warning(store: &Path) {
     let fanout = store.join("objects/00");
     std::fs::create_dir_all(&fanout).expect("create the sampled fan-out");
     for i in 0..391u16 {
-        std::fs::write(fanout.join(format!("{i:064x}")), []).expect("seed a loose object");
+        std::fs::write(fanout.join(format!("{i:062x}")), []).expect("seed a loose object");
     }
 }
 
