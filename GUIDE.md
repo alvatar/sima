@@ -497,9 +497,10 @@ VAST_API_KEY=... sima exec ci.toml --one-shot      # run, fetch, destroy
 - Budget is assessed only while attached. A detached command bills until an
   attach, `--end`, or `sima reconcile --hosted`.
 - `bootstrap_sima = true` uploads sima onto an image that lacks it. The upload
-  source is `sima-static` beside the local `sima` executable, a musl build:
-  `cargo build --release --target x86_64-unknown-linux-musl -p sima`, copied to
-  `target/release/sima-static`. Without the flag on such an image, exec fails
+  source is `sima-static` beside the local `sima` executable. Run
+  `scripts/build-sima-static.sh` to build the musl executable and place it at
+  `target/release/sima-static`. Rebuild the artifact after any commit touching
+  `crates/` or `Cargo.lock`. Without the flag on such an image, exec fails
   naming the key.
 - The remote job tree is `<root>/exec/<owner16>/` with `payload/`, `exec.log`,
   `exec.pid`, `exec.status`. Untracked files such as build caches survive
@@ -544,8 +545,8 @@ script), `SIMA_PROGRAM_DIGEST` (workers, echoed at handshake), `PYTHONPATH`.
 | Segmented search fails naming `state` | Program commits no `state` artifact. | Commit `sima.STATE_ARTIFACT` from every segment. |
 | `the vast.ai API key is read from VAST_API_KEY` | Unset or empty. | Source it into the command. |
 | Member short, search stopped | `fill = "strict"`. | `fill = "best-effort"` or fix constraints. |
-| `the remote image has no sima binary; set bootstrap_sima = true` | Specialized image. | Set the key and build `sima-static`. |
-| `bootstrap_sima expects .../sima-static` | Artifact absent. | Musl build, copy beside `sima`. |
+| `the remote image has no sima binary; set bootstrap_sima = true` | Specialized image. | Set the key and run `scripts/build-sima-static.sh`. |
+| `bootstrap_sima expects .../sima-static` | Artifact absent. | Run `scripts/build-sima-static.sh`; it places `target/release/sima-static`. |
 | `an exec command is already running` | Plain invocation over a running command. | `--attach` or `--end`. |
 | Machine still billing after crash | No code ran at death. | `sima reconcile <config>`; add `--hosted` if no migration is live. |
 | `cannot remove search ...: search not found` | Prefix names no search. | `sima searches <store>` for the id. |

@@ -579,7 +579,7 @@ impl FarExec for RemoteExec {
             .join("sima-static");
         if !artifact.is_file() {
             return Err(Error::Validation(format!(
-                "bootstrap_sima expects {} built with: cargo build --release --target x86_64-unknown-linux-musl -p sima",
+                "bootstrap_sima expects {}; build it with scripts/build-sima-static.sh",
                 artifact.display()
             )));
         }
@@ -1629,7 +1629,10 @@ mod tests {
                 .expect_err("missing static artifact");
             let message = error.to_string();
             assert!(message.contains("sima-static"), "{message}");
-            assert!(message.contains("x86_64-unknown-linux-musl"), "{message}");
+            assert!(
+                message.contains("scripts/build-sima-static.sh"),
+                "{message}"
+            );
         }
         Ok(())
     }
