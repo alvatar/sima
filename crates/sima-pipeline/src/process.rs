@@ -26,7 +26,21 @@ pub(crate) enum Probe {
     /// The route carried the probe successfully.
     Answered,
     /// SSH could not establish a connection to the machine.
-    Unreachable(Error),
+    Unreachable {
+        /// The diagnostic from SSH.
+        error: Error,
+        /// The class of connection refusal.
+        refusal: Refusal,
+    },
+}
+
+/// Why SSH could not establish a connection to a machine.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Refusal {
+    /// The route does not carry SSH yet.
+    Route,
+    /// SSH answered but rejected the account credentials.
+    Auth,
 }
 
 /// Probes an SSH route, separating a connection failure from a command
@@ -38,7 +52,14 @@ pub(crate) fn ssh_contact(argv: &[String], label: &str) -> Result<Probe> {
         return Ok(Probe::Answered);
     }
     if status.code() == Some(SSH_UNREACHABLE) {
-        return Ok(Probe::Unreachable(unreachable(label, status, &said)));
+        let refusal = match said.contains("Permission denied") {
+            true => Refusal::Auth,
+            false => Refusal::Route,
+        };
+        return Ok(Probe::Unreachable {
+            error: unreachable(label, status, &said),
+            refusal,
+        });
     }
     Err(Error::Transport(format!(
         "command on {label} exited with {status}"
@@ -242,9 +263,10 @@ mod tests {
             "test host",
         )
         .expect("the unreachable route is a probe outcome");
-        let Probe::Unreachable(error) = probe else {
+        let Probe::Unreachable { error, refusal } = probe else {
             panic!("exit 255 must be unreachable");
         };
+        assert_eq!(refusal, Refusal::Route);
         assert_eq!(
             error.to_string(),
             "worker transport error: cannot reach test host: ssh exited with exit status: 255"
@@ -263,9 +285,10 @@ mod tests {
             "test host",
         )
         .expect("the unreachable route is a probe outcome");
-        let Probe::Unreachable(error) = probe else {
+        let Probe::Unreachable { error, refusal } = probe else {
             panic!("exit 255 must be unreachable");
         };
+        assert_eq!(refusal, Refusal::Auth);
         assert_eq!(
             error.to_string(),
             "worker transport error: cannot reach test host: Permission denied (publickey)."
@@ -283,9 +306,10 @@ mod tests {
             "test host",
         )
         .expect("the unreachable route is a probe outcome");
-        let Probe::Unreachable(error) = probe else {
+        let Probe::Unreachable { error, refusal } = probe else {
             panic!("exit 255 must be unreachable");
         };
+        assert_eq!(refusal, Refusal::Route);
         assert_eq!(
             error.to_string(),
             "worker transport error: cannot reach test host: Connection refused"

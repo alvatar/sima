@@ -553,11 +553,9 @@ Rules, each one learned from a failed run:
   readiness, bootstrap, apt. A kept machine or a batched command amortizes
   it.
 - **Key rejection.** `cannot reach <host>: Permission denied (publickey)`
-  after the wait: that host never installed the account key. Rerun; it is
-  excluded after two incidents.
-- **Non-zero command exit under `--one-shot` keeps the machine.** Run
-  `--end`. Non-UTF-8 command output breaks the log stream; filter with
-  `tr -cd '\11\12\15\40-\176'`.
+  persists for 120 seconds after the first refusal: sima records a
+  `ProbeFailed` incident and releases the machine. Rerun; the host is excluded
+  after two incidents.
 
 ## Filesystem
 
@@ -600,7 +598,7 @@ script), `SIMA_PROGRAM_DIGEST` (workers, echoed at handshake), `PYTHONPATH`.
 | Member short, search stopped | `fill = "strict"`. | `fill = "best-effort"` or fix constraints. |
 | `the remote image has no sima binary; set bootstrap_sima = true` | Specialized image. | Set the key and run `scripts/build-sima-static.sh`. |
 | `bootstrap_sima expects .../sima-static` | Artifact absent. | Run `scripts/build-sima-static.sh`; it places `target/release/sima-static`. |
-| `cannot reach <host>: Permission denied (publickey)` | The host did not install the account key at boot; seen on individual hosts, independent of the image. | Rerun. The machine carries a `ProbeFailed` incident and is excluded after two. |
+| `cannot reach <host>: Permission denied (publickey)` | The host did not install the account key at boot; seen on individual hosts, independent of the image. | sima gives up 120 seconds after the first refusal, records a `ProbeFailed` incident, and releases the machine. Rerun; the host is excluded after two incidents. |
 | `cannot reach <host>: Connection refused` at the deadline | sshd did not come up within the readiness bound. | Raise `ready_timeout_ms` or change the image. |
 | `an exec command is already running` | Plain invocation over a running command. | `--attach` or `--end`. |
 | Machine still billing after crash | No code ran at death. | `sima reconcile <config>`; add `--hosted` if no migration is live. |

@@ -23,10 +23,15 @@ use sima_store::{Rental, Store};
 use crate::config::{ExecConfig, HostForm, load_exec};
 use crate::fetch::{fetch_over, shell_quote};
 use crate::migrate::sync::Reach;
-use crate::process::{Probe, ssh_contact};
+use crate::process::{Probe, Refusal, ssh_contact};
 use crate::program_delivery::{ExecDelivery, ingest_exec};
 use crate::providers::{ProviderSettings, provider_for};
 use crate::rental::{endpoint_target, transport_mode};
+
+/// Authentication refusals get two minutes because the provider's boot banner
+/// asks clients to retry after a few seconds, while keys absent this long do
+/// not arrive later.
+const AUTH_REFUSAL_GRACE: Duration = Duration::from_secs(120);
 
 /// How this invocation acts on the job's standing machine.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -200,6 +205,7 @@ fn run(
         &far,
         limits.usable_by,
         limits.ready_poll,
+        AUTH_REFUSAL_GRACE,
         interrupt,
         observer,
     ) {
@@ -244,17 +250,41 @@ fn contact_within(
     far: &dyn FarExec,
     deadline: Instant,
     poll: Duration,
+    auth_grace: Duration,
     interrupt: &AtomicBool,
     observer: &mut dyn ExecObserver,
 ) -> Result<Reached> {
     let mut narrated = false;
+    let mut auth_refused_at = None;
+    let mut auth_narrated = false;
     loop {
         // A provider reports ready when its container is running, before the
         // route necessarily accepts ssh, so the first connections may refuse.
         match far.contact()? {
             Probe::Answered => return Ok(Reached::Answered),
-            Probe::Unreachable(error) => {
-                if Instant::now() >= deadline {
+            Probe::Unreachable { error, refusal } => {
+                let now = Instant::now();
+                let auth_grace_elapsed = match refusal {
+                    Refusal::Auth => {
+                        let first = *auth_refused_at.get_or_insert(now);
+                        if !auth_narrated {
+                            observer.narration(&format!(
+                                "the machine rejects the account key; giving it {}s",
+                                auth_grace.as_secs()
+                            ));
+                            auth_narrated = true;
+                        }
+                        now.saturating_duration_since(first) >= auth_grace
+                    }
+                    Refusal::Route => {
+                        // A route failure after a refusal says sshd is gone;
+                        // if it comes back with the key, the next refusal
+                        // starts a fresh grace.
+                        auth_refused_at = None;
+                        false
+                    }
+                };
+                if now >= deadline || auth_grace_elapsed {
                     return Err(error);
                 }
             }
@@ -799,9 +829,30 @@ impl FarExec for RemoteExec {
         let stdout = child.stdout.take().expect("piped stdout");
         let (send, receive) = mpsc::channel();
         let reader = std::thread::spawn(move || {
-            for line in BufReader::new(stdout).lines() {
-                if send.send(line).is_err() {
-                    break;
+            let mut reader = BufReader::new(stdout);
+            let mut bytes = Vec::new();
+            loop {
+                bytes.clear();
+                // Keep transport bytes intact until a whole line is available;
+                // invalid UTF-8 then becomes replacement characters in output.
+                match reader.read_until(b'\n', &mut bytes) {
+                    Ok(0) => break,
+                    Ok(_) => {
+                        if bytes.last() == Some(&b'\n') {
+                            bytes.pop();
+                        }
+                        if bytes.last() == Some(&b'\r') {
+                            bytes.pop();
+                        }
+                        let line = String::from_utf8_lossy(&bytes).into_owned();
+                        if send.send(Ok(line)).is_err() {
+                            break;
+                        }
+                    }
+                    Err(error) => {
+                        let _ = send.send(Err(error));
+                        break;
+                    }
                 }
             }
         });
@@ -916,18 +967,20 @@ mod tests {
 
     struct ChoreographyDouble {
         calls: RefCell<Vec<&'static str>>,
+        contacts: RefCell<Vec<Instant>>,
         state: Cell<RemoteState>,
         binary_present: bool,
-        refusals: Cell<u32>,
+        refusals: RefCell<Vec<Refusal>>,
     }
 
     impl ChoreographyDouble {
         fn idle() -> ChoreographyDouble {
             ChoreographyDouble {
                 calls: RefCell::new(Vec::new()),
+                contacts: RefCell::new(Vec::new()),
                 state: Cell::new(RemoteState::Idle),
                 binary_present: true,
-                refusals: Cell::new(0),
+                refusals: RefCell::new(Vec::new()),
             }
         }
     }
@@ -935,14 +988,15 @@ mod tests {
     impl FarExec for ChoreographyDouble {
         fn contact(&self) -> Result<Probe> {
             self.calls.borrow_mut().push("contact");
-            let refusals = self.refusals.get();
-            if refusals == 0 {
+            self.contacts.borrow_mut().push(Instant::now());
+            if self.refusals.borrow().is_empty() {
                 return Ok(Probe::Answered);
             }
-            self.refusals.set(refusals - 1);
-            Ok(Probe::Unreachable(Error::Transport(
-                "the choreography double is unreachable".to_string(),
-            )))
+            let refusal = self.refusals.borrow_mut().remove(0);
+            Ok(Probe::Unreachable {
+                error: Error::Transport("the choreography double is unreachable".to_string()),
+                refusal,
+            })
         }
 
         fn state(&self) -> Result<RemoteState> {
@@ -1113,7 +1167,7 @@ mod tests {
     #[test]
     fn contact_waits_until_the_machine_answers() -> Result<()> {
         let far = ChoreographyDouble {
-            refusals: Cell::new(2),
+            refusals: RefCell::new(vec![Refusal::Route; 2]),
             ..ChoreographyDouble::idle()
         };
         let mut recording = Recording::default();
@@ -1121,6 +1175,7 @@ mod tests {
             &far,
             Instant::now() + Duration::from_secs(10),
             Duration::ZERO,
+            Duration::from_secs(10),
             &AtomicBool::new(false),
             &mut recording,
         )?;
@@ -1138,7 +1193,7 @@ mod tests {
     #[test]
     fn contact_returns_the_last_refusal_at_the_deadline() {
         let far = ChoreographyDouble {
-            refusals: Cell::new(u32::MAX),
+            refusals: RefCell::new(vec![Refusal::Route]),
             ..ChoreographyDouble::idle()
         };
         let mut recording = Recording::default();
@@ -1146,6 +1201,7 @@ mod tests {
             &far,
             Instant::now(),
             Duration::ZERO,
+            Duration::from_secs(10),
             &AtomicBool::new(false),
             &mut recording,
         )
@@ -1162,7 +1218,7 @@ mod tests {
     #[test]
     fn contact_reads_an_interrupt_after_the_first_refusal() -> Result<()> {
         let far = ChoreographyDouble {
-            refusals: Cell::new(u32::MAX),
+            refusals: RefCell::new(vec![Refusal::Route]),
             ..ChoreographyDouble::idle()
         };
         let mut recording = Recording::default();
@@ -1172,6 +1228,7 @@ mod tests {
             &far,
             Instant::now() + Duration::from_secs(10),
             poll,
+            Duration::from_secs(10),
             &AtomicBool::new(true),
             &mut recording,
         )?;
@@ -1190,6 +1247,7 @@ mod tests {
                 &far,
                 Instant::now() + Duration::from_secs(10),
                 Duration::ZERO,
+                Duration::from_secs(10),
                 &AtomicBool::new(false),
                 &mut recording,
             )?,
@@ -1197,6 +1255,96 @@ mod tests {
         );
         assert!(recording.narration.is_empty());
         Ok(())
+    }
+
+    #[test]
+    fn persistent_auth_refusal_ends_after_its_grace() {
+        let far = ChoreographyDouble {
+            refusals: RefCell::new(vec![Refusal::Auth; 1_000]),
+            ..ChoreographyDouble::idle()
+        };
+        let mut recording = Recording::default();
+        let started = Instant::now();
+        let error = contact_within(
+            &far,
+            Instant::now() + Duration::from_secs(10),
+            Duration::from_millis(1),
+            Duration::from_millis(20),
+            &AtomicBool::new(false),
+            &mut recording,
+        )
+        .expect_err("a persistent authentication refusal ends the wait");
+        assert!(started.elapsed() < Duration::from_millis(200));
+        assert!(
+            error
+                .to_string()
+                .contains("choreography double is unreachable"),
+            "{error}"
+        );
+        assert_eq!(
+            recording
+                .narration
+                .iter()
+                .filter(|line| line.contains("waiting for the machine to answer"))
+                .count(),
+            1
+        );
+        assert_eq!(
+            recording
+                .narration
+                .iter()
+                .filter(|line| line.contains("rejects the account key"))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn transient_auth_refusal_can_still_answer() -> Result<()> {
+        let far = ChoreographyDouble {
+            refusals: RefCell::new(vec![Refusal::Auth; 2]),
+            ..ChoreographyDouble::idle()
+        };
+        let reached = contact_within(
+            &far,
+            Instant::now() + Duration::from_secs(10),
+            Duration::ZERO,
+            Duration::from_secs(1),
+            &AtomicBool::new(false),
+            &mut Recording::default(),
+        )?;
+        assert_eq!(reached, Reached::Answered);
+        Ok(())
+    }
+
+    #[test]
+    fn route_refusal_restarts_the_auth_grace() {
+        let far = ChoreographyDouble {
+            refusals: RefCell::new(
+                [Refusal::Auth, Refusal::Route]
+                    .into_iter()
+                    .chain(std::iter::repeat_n(Refusal::Auth, 1_000))
+                    .collect(),
+            ),
+            ..ChoreographyDouble::idle()
+        };
+        let error = contact_within(
+            &far,
+            Instant::now() + Duration::from_secs(10),
+            Duration::from_millis(1),
+            Duration::from_millis(30),
+            &AtomicBool::new(false),
+            &mut Recording::default(),
+        )
+        .expect_err("the restarted authentication grace ends the wait");
+        let ended = Instant::now();
+        assert!(
+            error
+                .to_string()
+                .contains("choreography double is unreachable"),
+            "{error}"
+        );
+        assert!(ended.duration_since(far.contacts.borrow()[2]) >= Duration::from_millis(30));
     }
 
     #[test]
@@ -1384,6 +1532,52 @@ mod tests {
         assert!(dir.path().join("exec-outputs/exec.log").is_file());
         let store = Store::open(dir.path().join(".sima/store"))?;
         assert_eq!(store.instance_records()?.len(), 1, "kept rental ledger");
+        Ok(())
+    }
+
+    #[test]
+    fn exec_streams_non_utf8_output_lossily_and_fetches_outputs() -> Result<()> {
+        let dir = tempfile::tempdir().expect("job");
+        let config = job_config(
+            dir.path(),
+            "mkdir -p reports; printf fetched > reports/out.txt; printf 'ok\\n\\377\\376 bad\\nend\\n'",
+        );
+        let mut recording = Recording::default();
+        let outcome = exec(
+            &config,
+            &ExecOptions {
+                action: ExecAction::Start { one_shot: false },
+                fetch_to: None,
+            },
+            &AtomicBool::new(false),
+            &mut recording,
+        )?;
+        assert_eq!(outcome, ExecOutcome::Completed(0));
+        assert_eq!(recording.command, ["ok", "�� bad", "end"]);
+        assert_eq!(
+            fs::read_to_string(dir.path().join("exec-outputs/reports/out.txt"))
+                .expect("fetched output"),
+            "fetched"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn exec_stream_strips_carriage_return_before_newline() -> Result<()> {
+        let dir = tempfile::tempdir().expect("job");
+        let config = job_config(dir.path(), "printf 'line\\r\\n'");
+        let mut recording = Recording::default();
+        let outcome = exec(
+            &config,
+            &ExecOptions {
+                action: ExecAction::Start { one_shot: false },
+                fetch_to: None,
+            },
+            &AtomicBool::new(false),
+            &mut recording,
+        )?;
+        assert_eq!(outcome, ExecOutcome::Completed(0));
+        assert_eq!(recording.command, ["line"]);
         Ok(())
     }
 

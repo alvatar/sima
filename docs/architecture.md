@@ -2763,6 +2763,8 @@ state.
 The first contact with the machine is retried under the host entry's readiness
 bounds. Only this step retries. Every later operation runs against a machine
 that has already answered, so a later failure is returned without repetition.
+An authentication refusal gets a 120-second grace from its first occurrence;
+a route failure resets the grace because sshd may have restarted.
 The error returned at the deadline carries ssh's last diagnostic line, so a
 rejected key and a refused connection read differently.
 
