@@ -498,10 +498,10 @@ VAST_API_KEY=... sima exec ci.toml --one-shot      # run, fetch, destroy
   attach, `--end`, or `sima reconcile --hosted`.
 - `bootstrap_sima = true` uploads sima onto an image that lacks it. The upload
   source is `sima-static` beside the local `sima` executable. Run
-  `scripts/build-sima-static.sh` from the workspace root to build the musl
-  executable and place it at `target/release/sima-static`. Rebuild the artifact
-  after any commit touching `crates/` or `Cargo.lock`. Without the flag on such
-  an image, exec fails naming the key.
+  `scripts/build-sima-static.sh` to build the musl executable and place it at
+  `target/release/sima-static`. Rebuild the artifact after any commit touching
+  `crates/` or `Cargo.lock`. Without the flag on such an image, exec fails
+  naming the key.
 - The remote job tree is `<root>/exec/<owner16>/` with `payload/`, `exec.log`,
   `exec.pid`, `exec.status`. Untracked files such as build caches survive
   redelivery.
