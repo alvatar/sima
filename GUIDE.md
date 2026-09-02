@@ -598,7 +598,7 @@ script), `SIMA_PROGRAM_DIGEST` (workers, echoed at handshake), `PYTHONPATH`.
 | Member short, search stopped | `fill = "strict"`. | `fill = "best-effort"` or fix constraints. |
 | `the remote image has no sima binary; set bootstrap_sima = true` | Specialized image. | Set the key and run `scripts/build-sima-static.sh`. |
 | `bootstrap_sima expects .../sima-static` | Artifact absent. | Run `scripts/build-sima-static.sh`; it places `target/release/sima-static`. |
-| `cannot reach <host>: Permission denied (publickey)` | The host did not install the account key at boot; seen on individual hosts, independent of the image. | Sima gives up 120 seconds after the first refusal, records a `ProbeFailed` incident, and releases the machine. Rerun; the host is excluded after two incidents. |
+| `cannot reach <host>: Permission denied (publickey)` | The host did not install the account key at boot; seen on individual hosts, independent of the image. | sima gives up 120 seconds after the first refusal, records a `ProbeFailed` incident, and releases the machine. Rerun; the host is excluded after two incidents. |
 | `cannot reach <host>: Connection refused` at the deadline | sshd did not come up within the readiness bound. | Raise `ready_timeout_ms` or change the image. |
 | `an exec command is already running` | Plain invocation over a running command. | `--attach` or `--end`. |
 | Machine still billing after crash | No code ran at death. | `sima reconcile <config>`; add `--hosted` if no migration is live. |
