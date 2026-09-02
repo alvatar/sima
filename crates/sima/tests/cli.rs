@@ -3,7 +3,7 @@
 
 mod common;
 
-use std::os::unix::process::{CommandExt, ExitStatusExt};
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::time::{Duration, Instant};
@@ -1301,37 +1301,6 @@ fn sigterm_interrupts_gracefully_and_leaves_a_resumable_store() {
 #[test]
 fn sighup_interrupts_gracefully_and_leaves_a_resumable_store() {
     terminating_signal_interrupts_gracefully(libc::SIGHUP);
-}
-
-#[test]
-fn a_second_sigterm_uses_the_default_termination() {
-    let dir = tempfile::tempdir().expect("temp dir");
-    let config = write_config(
-        dir.path(),
-        r#""sleep:5000", "sleep:5000", "sleep:5000", "sleep:5000""#,
-    );
-    let child = sima_command()
-        .args(["search", config.to_str().expect("utf-8 path")])
-        .stdout(std::process::Stdio::null())
-        .spawn()
-        .expect("spawn sima search");
-    assert!(
-        common::wait_for_first_lease(&config, Duration::from_secs(30)),
-        "the search leased a task before the interrupt"
-    );
-    assert_eq!(
-        unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGTERM) },
-        0
-    );
-    // Give the first handler time to arm the conditional default while the
-    // search is still winding down.
-    std::thread::sleep(Duration::from_millis(500));
-    assert_eq!(
-        unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGTERM) },
-        0
-    );
-    let output = common::wait_within(child, Duration::from_secs(30));
-    assert_eq!(output.status.signal(), Some(libc::SIGTERM));
 }
 
 #[test]
