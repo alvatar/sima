@@ -117,6 +117,7 @@ mod tests {
     use sima_store::InstanceRecordState;
 
     use super::*;
+    use crate::offer::Constraints;
     use crate::stub::StubProvider;
     use crate::testutil::{instance_record_as, live_state, sample_search, stub_offer, temp_store};
 
@@ -133,7 +134,7 @@ mod tests {
     /// two rentals name two offers.
     fn provisioned(stub: &StubProvider, nth: usize, tag: &str) -> InstanceId {
         let offer = stub
-            .offers()
+            .offers(&Constraints::default())
             .expect("offers")
             .into_iter()
             .nth(nth)

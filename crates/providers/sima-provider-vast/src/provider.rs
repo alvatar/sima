@@ -2,7 +2,7 @@
 
 use sima_core::Result;
 use sima_provider::{
-    InstanceId, InstanceStatus, Offer, OfferId, Provider, Provision, TaggedInstance,
+    Constraints, InstanceId, InstanceStatus, Offer, OfferId, Provider, Provision, TaggedInstance,
 };
 
 use crate::client::VastClient;
@@ -40,8 +40,8 @@ impl Provider for VastProvider {
         PROVIDER_ID
     }
 
-    fn offers(&self) -> Result<Vec<Offer>> {
-        offers::search(&self.client)
+    fn offers(&self, narrowing: &Constraints) -> Result<Vec<Offer>> {
+        offers::search(&self.client, narrowing)
     }
 
     fn provision(&self, offer: &OfferId, tag: &str) -> Result<Provision> {
@@ -91,7 +91,7 @@ mod tests {
         });
         assert_eq!(provider.id(), PROVIDER_ID);
         let ranked = select(
-            provider.offers()?,
+            provider.offers(&Constraints::default())?,
             &Constraints::default(),
             Objective::CheapestPerHour,
         );

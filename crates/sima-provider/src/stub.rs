@@ -11,7 +11,7 @@ use std::sync::Mutex;
 
 use sima_core::{Error, Result};
 
-use crate::offer::{Offer, OfferId, Price};
+use crate::offer::{Constraints, Offer, OfferId, Price};
 use crate::provider::{
     Instance, InstanceId, InstanceStatus, Provider, Provision, Reachability, SshEndpoint,
     TaggedInstance,
@@ -244,7 +244,9 @@ impl Provider for StubProvider {
         STUB_PROVIDER_ID
     }
 
-    fn offers(&self) -> Result<Vec<Offer>> {
+    /// Returns the in-process market in full. It is small, and leaving it
+    /// unfiltered exercises authoritative selection in the test suite.
+    fn offers(&self, _narrowing: &Constraints) -> Result<Vec<Offer>> {
         self.read(|state| match &state.offers_failure {
             Some(message) => Err(Error::Provider(message.clone())),
             None => Ok(state.offers.clone()),
@@ -378,7 +380,7 @@ fn fabricated_endpoint(id: &InstanceId) -> SshEndpoint {
 #[cfg(test)]
 mod tests {
     use super::StubProvider;
-    use crate::offer::Price;
+    use crate::offer::{Constraints, Price};
     use crate::provider::{
         InstanceId, InstanceStatus, Provider, Provision, Reachability, SshEndpoint,
     };
@@ -579,7 +581,7 @@ mod tests {
     fn a_scripted_api_failure_surfaces_from_offers_and_provision() {
         let listing = StubProvider::new(Vec::new()).failing_offers("list offers: 503");
         assert!(matches!(
-            listing.offers(),
+            listing.offers(&Constraints::default()),
             Err(Error::Provider(message)) if message == "list offers: 503"
         ));
         let offer = stub_offer("any", 100_000);

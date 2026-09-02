@@ -20,6 +20,33 @@ use crate::config::Container;
 /// distinct from a command on the far side exiting non-zero.
 const SSH_UNREACHABLE: i32 = 255;
 
+/// What a machine answered at the transport boundary.
+#[derive(Debug)]
+pub(crate) enum Probe {
+    /// The route carried the probe successfully.
+    Answered,
+    /// SSH could not establish a connection to the machine.
+    Unreachable(Error),
+}
+
+/// Probes an SSH route, separating a connection failure from a command
+/// failure after the route answered. Exit 255 is ssh's own status and means
+/// unreachable only when ssh is in `argv`, so callers pass ssh argv only.
+pub(crate) fn ssh_contact(argv: &[String], label: &str) -> Result<Probe> {
+    let status = command_status(argv)?;
+    if status.success() {
+        return Ok(Probe::Answered);
+    }
+    if status.code() == Some(SSH_UNREACHABLE) {
+        return Ok(Probe::Unreachable(Error::Transport(format!(
+            "cannot reach {label}: ssh exited with {status}"
+        ))));
+    }
+    Err(Error::Transport(format!(
+        "command on {label} exited with {status}"
+    )))
+}
+
 /// What asking a machine for a pool's worker image found.
 pub(crate) enum ImageCheck {
     /// The runtime answered and holds the image.
@@ -167,6 +194,48 @@ pub(crate) fn worker_binary() -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ssh_contact_distinguishes_an_unreachable_route() {
+        let probe = ssh_contact(
+            &[
+                "/bin/sh".to_string(),
+                "-c".to_string(),
+                "exit 255".to_string(),
+            ],
+            "test host",
+        )
+        .expect("the unreachable route is a probe outcome");
+        let Probe::Unreachable(error) = probe else {
+            panic!("exit 255 must be unreachable");
+        };
+        assert_eq!(
+            error.to_string(),
+            "worker transport error: cannot reach test host: ssh exited with exit status: 255"
+        );
+    }
+
+    #[test]
+    fn ssh_contact_accepts_an_answering_route() {
+        assert!(matches!(
+            ssh_contact(&["/bin/true".to_string()], "test host"),
+            Ok(Probe::Answered)
+        ));
+    }
+
+    #[test]
+    fn ssh_contact_preserves_a_remote_command_failure() {
+        let error = ssh_contact(
+            &[
+                "/bin/sh".to_string(),
+                "-c".to_string(),
+                "exit 3".to_string(),
+            ],
+            "test host",
+        )
+        .expect_err("a remote failure is not an unreachable route");
+        assert!(error.to_string().contains("exit status: 3"), "{error}");
+    }
 
     #[test]
     fn a_command_that_fails_carries_what_it_said_rather_than_printing_it() {

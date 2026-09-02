@@ -216,7 +216,7 @@ mod tests {
 
     use super::teardown;
     use crate::budget::Cost;
-    use crate::offer::{Offer, OfferId, Price};
+    use crate::offer::{Constraints, Offer, OfferId, Price};
     use crate::provider::{InstanceId, InstanceStatus, Provider, Provision, TaggedInstance};
     use crate::stub::StubProvider;
     use crate::testutil::{
@@ -367,7 +367,7 @@ mod tests {
             "stub"
         }
 
-        fn offers(&self) -> Result<Vec<Offer>> {
+        fn offers(&self, _narrowing: &Constraints) -> Result<Vec<Offer>> {
             Ok(Vec::new())
         }
 

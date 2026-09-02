@@ -108,7 +108,7 @@ workers = 2
 # provider         = "vast"               # vast | stub (stub: in-process, for tests)
 # image            = "ghcr.io/alvatar/sima:latest"          # default as shown
 # disk_gb          = 64                   # default 32
-# ready_timeout_ms = 600000               # default as shown
+# ready_timeout_ms = 1200000              # default as shown
 # ready_poll_ms    = 5000                 # default as shown
 # [host.cloudbox.constraints]            # every key optional
 # gpu_models         = ["RTX 4090"]

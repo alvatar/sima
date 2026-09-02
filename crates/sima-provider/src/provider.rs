@@ -23,7 +23,7 @@
 
 use sima_core::Result;
 
-use crate::offer::{Offer, OfferId, Price};
+use crate::offer::{Constraints, Offer, OfferId, Price};
 
 /// How a machine acquired from a control plane is reached.
 ///
@@ -109,9 +109,10 @@ pub trait Provider {
     /// never changes for a given backend.
     fn id(&self) -> &'static str;
 
-    /// The current marketplace, normalized. Order carries no meaning;
-    /// [`select`](crate::select) imposes the order that does.
-    fn offers(&self) -> Result<Vec<Offer>>;
+    /// The current marketplace, normalized. `narrowing` lets a backend reduce
+    /// the listing with compatible constraints; callers still apply
+    /// [`select`](crate::select), which is authoritative and imposes order.
+    fn offers(&self, narrowing: &Constraints) -> Result<Vec<Offer>>;
 
     /// Rents `offer`, attaching `tag` to the created instance verbatim.
     /// An offer another renter took first is [`Provision::OfferGone`];

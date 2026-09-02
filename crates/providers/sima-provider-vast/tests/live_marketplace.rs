@@ -22,7 +22,7 @@ use sima_provider_vast::{VastConfig, VastProvider};
 #[ignore = "reaches the live marketplace and needs a real VAST_API_KEY"]
 fn the_live_marketplace_lists_offers_that_normalize() -> Result<()> {
     let provider = VastProvider::new(VastConfig::from_env("ghcr.io/owner/sima-worker", 64)?);
-    let offers = provider.offers()?;
+    let offers = provider.offers(&Constraints::default())?;
     assert!(
         !offers.is_empty(),
         "the marketplace lists on-demand machines at any hour"

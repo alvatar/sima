@@ -221,7 +221,7 @@ mod tests {
 
     use super::{ReconcileScope, reconcile};
     use crate::guard::teardown;
-    use crate::offer::Price;
+    use crate::offer::{Constraints, Price};
     use crate::provider::{InstanceId, Provider};
     use crate::stub::StubProvider;
     use crate::testutil::{
@@ -574,7 +574,7 @@ mod tests {
     /// rentals name two offers.
     fn provisioned(stub: &StubProvider, nth: usize, tag: &str) -> String {
         let offer = stub
-            .offers()
+            .offers(&Constraints::default())
             .expect("offers")
             .into_iter()
             .nth(nth)

@@ -69,6 +69,10 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// How long a whole call may take, connection and body together.
 const CALL_TIMEOUT: Duration = Duration::from_secs(60);
 
+/// How long an offers listing may take while the marketplace assembles its
+/// larger response.
+pub(crate) const LIST_TIMEOUT: Duration = Duration::from_secs(120);
+
 /// An authenticated client for one API root.
 pub(crate) struct VastClient {
     /// The API root every path is appended to.
@@ -91,8 +95,8 @@ impl VastClient {
         // path runs on a thread a search is waiting on: an acquisition before the
         // first task, a heartbeat between them, a teardown at the end. The
         // connect bound is short — a reachable service answers a handshake in
-        // well under it — while the overall bound covers a listing the service
-        // is slow to assemble.
+        // well under it — while the overall bound covers an ordinary API
+        // response. Operations needing more headroom override it per request.
         let agent: Agent = Agent::config_builder()
             .http_status_as_error(false)
             .timeout_connect(Some(CONNECT_TIMEOUT))
@@ -112,9 +116,21 @@ impl VastClient {
         answer(request.call(), operation)
     }
 
-    /// `POST path` with `body` as JSON.
-    pub(crate) fn post(&self, path: &str, body: &Value, operation: &str) -> Result<Answer> {
-        let request = self.authed(self.agent.post(self.url(path)));
+    /// `POST path` with `body` as JSON and a request-specific global timeout.
+    pub(crate) fn post_with_timeout(
+        &self,
+        path: &str,
+        body: &Value,
+        operation: &str,
+        timeout: Duration,
+    ) -> Result<Answer> {
+        let request = self
+            .agent
+            .post(self.url(path))
+            .config()
+            .timeout_global(Some(timeout))
+            .build();
+        let request = self.authed(request);
         answer(request.send_json(body), operation)
     }
 
@@ -194,7 +210,12 @@ mod tests {
         ]);
         let client = VastClient::new(&server.url(), "k-secret");
         client.get("/api/v0/instances/7/", "show instance")?;
-        client.post("/api/v0/bundles/", &serde_json::json!({}), "list offers")?;
+        client.post_with_timeout(
+            "/api/v0/bundles/",
+            &serde_json::json!({}),
+            "list offers",
+            super::CALL_TIMEOUT,
+        )?;
         client.put("/api/v0/asks/3/", &serde_json::json!({}), "create instance")?;
         client.delete("/api/v0/instances/7/", "destroy instance")?;
         let requests = server.requests();

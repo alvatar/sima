@@ -379,7 +379,7 @@ sima rents the cheapest machine that satisfies the constraints, boots its image 
 ```
 search 4728422a…
 renting: 1× RTX 4090 on 8127-a41 at $0.174/hr
-waiting for the machine to come up (pulls the image; up to 600s)
+waiting for the machine to come up (pulls the image; up to 1200s)
 sending the search: 214 objects
 installing the program
 starting the search
@@ -446,9 +446,9 @@ sima search search.toml --fleet
 ```
 search b80a8ca…
 renting cheap[0]: 1× GTX 1660 on 8127-a41 at $0.056/hr
-waiting for the machine cheap[0] to come up (pulls the image; up to 600s)
+waiting for the machine cheap[0] to come up (pulls the image; up to 1200s)
 renting cheap[1]: 1× RTX 3060 Ti on 5512-c09 at $0.048/hr
-waiting for the machine cheap[1] to come up (pulls the image; up to 600s)
+waiting for the machine cheap[1] to come up (pulls the image; up to 1200s)
 installing the program cheap[1]
 installing the program cheap[0]
 started: 6 tasks

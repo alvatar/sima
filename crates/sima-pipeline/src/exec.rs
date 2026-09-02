@@ -14,14 +14,16 @@ use std::time::{Duration, Instant};
 use sima_core::{Error, Result, hash_bytes, own_process_group};
 use sima_model::SearchId;
 use sima_provider::{
-    AcquireLimits, Admission, Exhaustion, InstanceGuard, Objective, Provider, Verdict, acquire,
-    adopt, assess, is_acquisition_cancelled, never_cancelled, now_ms,
+    AcquireLimits, Admission, Exhaustion, IncidentKind, InstanceGuard, Objective, Provider,
+    Verdict, acquire, adopt, assess, is_acquisition_cancelled, never_cancelled, now_ms,
+    record_incident,
 };
 use sima_store::{Rental, Store};
 
 use crate::config::{ExecConfig, HostForm, load_exec};
 use crate::fetch::{fetch_over, shell_quote};
 use crate::migrate::sync::Reach;
+use crate::process::{Probe, ssh_contact};
 use crate::program_delivery::{ExecDelivery, ingest_exec};
 use crate::providers::{ProviderSettings, provider_for};
 use crate::rental::{endpoint_target, transport_mode};
@@ -194,6 +196,29 @@ fn run(
         &config.host.binary,
     );
     let far = RemoteExec::new(reach, &config.host.root, &owner);
+    match contact_within(
+        &far,
+        limits.usable_by,
+        limits.ready_poll,
+        interrupt,
+        observer,
+    ) {
+        Ok(Reached::Answered) => {}
+        Ok(Reached::Interrupted) => {
+            let kept = !matches!(options.action, ExecAction::Start { one_shot: true });
+            let outcome = ExecOutcome::Abandoned { kept };
+            let session = if kept {
+                SessionOutcome::Keep(outcome)
+            } else {
+                SessionOutcome::Release(outcome)
+            };
+            return finish_guard(guard, options.action, Ok(session));
+        }
+        Err(error) if !adopted => {
+            return Err(abandon_unreached(guard, &store, provider.id(), error));
+        }
+        Err(error) => return finish_guard(guard, options.action, Err(error)),
+    }
     let fetch_to = options.fetch_to.as_ref().unwrap_or(&config.fetch_to);
     let session = match options.action {
         ExecAction::Attach => attach(&far, &store, &config, fetch_to, interrupt, observer),
@@ -203,6 +228,86 @@ fn run(
         ),
     };
     finish_guard(guard, options.action, session)
+}
+
+/// How the first contact wait ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Reached {
+    /// The machine answered at the transport boundary.
+    Answered,
+    /// The operator ended the wait before the machine answered.
+    Interrupted,
+}
+
+/// Waits for the first contact with a machine under its readiness bounds.
+fn contact_within(
+    far: &dyn FarExec,
+    deadline: Instant,
+    poll: Duration,
+    interrupt: &AtomicBool,
+    observer: &mut dyn ExecObserver,
+) -> Result<Reached> {
+    let mut narrated = false;
+    loop {
+        // A provider reports ready when its container is running, before the
+        // route necessarily accepts ssh, so the first connections may refuse.
+        match far.contact()? {
+            Probe::Answered => return Ok(Reached::Answered),
+            Probe::Unreachable(error) => {
+                if Instant::now() >= deadline {
+                    return Err(error);
+                }
+            }
+        }
+        if !narrated {
+            observer.narration(&format!(
+                "waiting for the machine to answer (up to {}s)",
+                deadline.saturating_duration_since(Instant::now()).as_secs()
+            ));
+            narrated = true;
+        }
+        // Only first contact retries. Every later operation runs against a
+        // machine that has answered, so its failure is authoritative.
+        // Read the interrupt after this refusal and before sleeping so the
+        // operator can end the wait without one more poll delay.
+        if interrupt.load(Ordering::Relaxed) {
+            return Ok(Reached::Interrupted);
+        }
+        std::thread::sleep(poll);
+    }
+}
+
+/// Records and releases a fresh rental that never answered its first probe.
+fn abandon_unreached(
+    guard: InstanceGuard<'_, dyn Provider + Sync>,
+    store: &Store,
+    provider_id: &str,
+    error: Error,
+) -> Error {
+    let recorded = record_incident(
+        store,
+        provider_id,
+        guard.machine(),
+        guard.tag(),
+        IncidentKind::ProbeFailed,
+        now_ms(),
+    );
+    let released = guard.release();
+    match (recorded.err(), released.err()) {
+        (None, None) => error,
+        (recording, release) => {
+            let mut message = error.to_string();
+            if let Some(recording) = recording {
+                message.push_str(&format!(
+                    "; recording the machine incident also failed: {recording}"
+                ));
+            }
+            if let Some(release) = release {
+                message.push_str(&format!("; releasing the machine also failed: {release}"));
+            }
+            Error::Provider(message)
+        }
+    }
 }
 
 fn finish_guard(
@@ -432,6 +537,8 @@ enum Followed {
 /// implementation speaks through a [`Reach`]; tests can drive the same state
 /// transitions without a process or network.
 trait FarExec {
+    /// Whether the transport route answers before any session operation runs.
+    fn contact(&self) -> Result<Probe>;
     /// The command state recorded in the remote job tree.
     fn state(&self) -> Result<RemoteState>;
     /// Whether the configured sima binary resolves on the remote host.
@@ -527,6 +634,17 @@ impl RemoteExec {
 }
 
 impl FarExec for RemoteExec {
+    fn contact(&self) -> Result<Probe> {
+        match &self.reach {
+            Reach::Ssh { destination, .. } => {
+                let mut argv = destination.prefix();
+                argv.push("true".to_string());
+                ssh_contact(&argv, &self.reach.label())
+            }
+            Reach::Here(_) => Ok(Probe::Answered),
+        }
+    }
+
     fn state(&self) -> Result<RemoteState> {
         let output = self.shell(&format!(
             "job={}\npid=$(cat \"$job/exec.pid\" 2>/dev/null || true)\nif [ -f \"$job/exec.status\" ]; then echo finished:$(cat \"$job/exec.status\"); elif [ -n \"$pid\" ] && kill -0 \"$pid\" 2>/dev/null; then echo running:$pid; else echo idle; fi\n",
@@ -775,6 +893,9 @@ mod tests {
     use std::sync::{Mutex, PoisonError};
 
     use super::*;
+    use crate::rental::fixtures::{acquisition_env, offer};
+    use sima_provider::stub::StubProvider;
+    use sima_provider::{Budget, Constraints, IncidentKind};
     use sima_store::{InstanceRecord, InstanceRecordState};
 
     #[derive(Default)]
@@ -797,6 +918,7 @@ mod tests {
         calls: RefCell<Vec<&'static str>>,
         state: Cell<RemoteState>,
         binary_present: bool,
+        refusals: Cell<u32>,
     }
 
     impl ChoreographyDouble {
@@ -805,11 +927,24 @@ mod tests {
                 calls: RefCell::new(Vec::new()),
                 state: Cell::new(RemoteState::Idle),
                 binary_present: true,
+                refusals: Cell::new(0),
             }
         }
     }
 
     impl FarExec for ChoreographyDouble {
+        fn contact(&self) -> Result<Probe> {
+            self.calls.borrow_mut().push("contact");
+            let refusals = self.refusals.get();
+            if refusals == 0 {
+                return Ok(Probe::Answered);
+            }
+            self.refusals.set(refusals - 1);
+            Ok(Probe::Unreachable(Error::Transport(
+                "the choreography double is unreachable".to_string(),
+            )))
+        }
+
         fn state(&self) -> Result<RemoteState> {
             self.calls.borrow_mut().push("state");
             Ok(self.state.get())
@@ -976,6 +1111,132 @@ mod tests {
     }
 
     #[test]
+    fn contact_waits_until_the_machine_answers() -> Result<()> {
+        let far = ChoreographyDouble {
+            refusals: Cell::new(2),
+            ..ChoreographyDouble::idle()
+        };
+        let mut recording = Recording::default();
+        let reached = contact_within(
+            &far,
+            Instant::now() + Duration::from_secs(10),
+            Duration::ZERO,
+            &AtomicBool::new(false),
+            &mut recording,
+        )?;
+        assert_eq!(reached, Reached::Answered);
+        assert_eq!(*far.calls.borrow(), ["contact", "contact", "contact"]);
+        assert_eq!(recording.narration.len(), 1);
+        assert!(
+            recording.narration[0].contains("waiting for the machine to answer"),
+            "{:?}",
+            recording.narration
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn contact_returns_the_last_refusal_at_the_deadline() {
+        let far = ChoreographyDouble {
+            refusals: Cell::new(u32::MAX),
+            ..ChoreographyDouble::idle()
+        };
+        let mut recording = Recording::default();
+        let error = contact_within(
+            &far,
+            Instant::now(),
+            Duration::ZERO,
+            &AtomicBool::new(false),
+            &mut recording,
+        )
+        .expect_err("the elapsed deadline ends the wait");
+        assert!(
+            error
+                .to_string()
+                .contains("choreography double is unreachable"),
+            "{error}"
+        );
+        assert_eq!(*far.calls.borrow(), ["contact"]);
+    }
+
+    #[test]
+    fn contact_reads_an_interrupt_after_the_first_refusal() -> Result<()> {
+        let far = ChoreographyDouble {
+            refusals: Cell::new(u32::MAX),
+            ..ChoreographyDouble::idle()
+        };
+        let mut recording = Recording::default();
+        let poll = Duration::from_secs(1);
+        let started = Instant::now();
+        let reached = contact_within(
+            &far,
+            Instant::now() + Duration::from_secs(10),
+            poll,
+            &AtomicBool::new(true),
+            &mut recording,
+        )?;
+        assert_eq!(reached, Reached::Interrupted);
+        assert_eq!(*far.calls.borrow(), ["contact"]);
+        assert!(started.elapsed() < poll);
+        Ok(())
+    }
+
+    #[test]
+    fn contact_that_answers_immediately_emits_no_wait_narration() -> Result<()> {
+        let far = ChoreographyDouble::idle();
+        let mut recording = Recording::default();
+        assert_eq!(
+            contact_within(
+                &far,
+                Instant::now() + Duration::from_secs(10),
+                Duration::ZERO,
+                &AtomicBool::new(false),
+                &mut recording,
+            )?,
+            Reached::Answered
+        );
+        assert!(recording.narration.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn an_unreached_fresh_rental_is_recorded_and_released() -> Result<()> {
+        let (_dir, store, owner) = acquisition_env();
+        let provider = StubProvider::new(vec![offer("unreached", 100_000)]);
+        let provider: &(dyn Provider + Sync) = &provider;
+        let lock = store.acquire_search_lock(&owner)?;
+        let guard = acquire(
+            provider,
+            &store,
+            &lock,
+            Rental::Exec,
+            &Constraints::default(),
+            Objective::CheapestPerHour,
+            &AcquireLimits {
+                usable_by: Instant::now() + Duration::from_secs(1),
+                ready_poll: Duration::ZERO,
+            },
+            &Budget::default(),
+            &Admission::new(),
+            never_cancelled(),
+            sima_provider::UNREPORTED,
+        )?;
+        let machine = guard.machine().to_string();
+        let expected = Error::Transport("fresh rental never answered".to_string());
+        let returned = abandon_unreached(guard, &store, provider.id(), expected);
+        assert_eq!(
+            returned.to_string(),
+            "worker transport error: fresh rental never answered"
+        );
+        let incidents = store.machine_incidents()?;
+        assert_eq!(incidents.len(), 1);
+        assert_eq!(incidents[0].machine, machine);
+        assert_eq!(incidents[0].kind, IncidentKind::ProbeFailed);
+        assert!(store.instance_records()?.is_empty());
+        Ok(())
+    }
+
+    #[test]
     fn start_choreography_runs_through_the_far_side_boundary() -> Result<()> {
         let dir = tempfile::tempdir().expect("job");
         let path = job_config(dir.path(), "opaque command");
@@ -1005,7 +1266,7 @@ mod tests {
                 "deliver",
                 "start",
                 "follow",
-                "fetch",
+                "fetch"
             ]
         );
         Ok(())

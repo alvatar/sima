@@ -1318,7 +1318,7 @@ mod tests {
         assert_eq!(rented.provider, ProviderId::Vast);
         assert_eq!(rented.image, "ghcr.io/alvatar/sima:latest");
         assert_eq!(rented.disk_gb, 32);
-        assert_eq!(rented.ready_timeout, Duration::from_millis(600_000));
+        assert_eq!(rented.ready_timeout, Duration::from_millis(1_200_000));
         assert_eq!(rented.ready_poll, Duration::from_millis(5_000));
         assert!(rented.constraints.gpu_models.is_empty());
         assert_eq!(rented.constraints.max_price, None);
