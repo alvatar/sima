@@ -113,7 +113,7 @@ pub(super) fn one_group<'a>(
 }
 
 /// A generous stub offer at `price` micro-USD/hour, distinct by `id`.
-pub(super) fn offer(id: &str, price: u64) -> Offer {
+pub(crate) fn offer(id: &str, price: u64) -> Offer {
     Offer {
         id: OfferId(id.to_string()),
         machine: format!("machine-{id}"),
@@ -131,7 +131,7 @@ pub(super) fn offer(id: &str, price: u64) -> Offer {
 }
 
 /// A store over a fresh temp directory and a search id to own acquisitions.
-pub(super) fn acquisition_env() -> (TempDir, Store, SearchId) {
+pub(crate) fn acquisition_env() -> (TempDir, Store, SearchId) {
     let dir = tempfile::tempdir().expect("temp dir");
     let store = Store::open(dir.path()).expect("open store");
     let search = SearchConfig {

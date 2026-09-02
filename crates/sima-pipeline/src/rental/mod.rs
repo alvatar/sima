@@ -12,7 +12,7 @@ mod rented_program;
 mod supervisor;
 
 #[cfg(test)]
-mod fixtures;
+pub(crate) mod fixtures;
 
 pub(crate) use acquire::{
     RentalGroup, acquire_hosts, budget_exhausted, endpoint_target, provider_for_rental,
