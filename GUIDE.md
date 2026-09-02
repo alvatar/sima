@@ -166,7 +166,7 @@ of the wrong form are refused by name.
 | `disk_gb` | no | yes | 32. |
 | `env` | no | yes | `{}`. Environment set at instance creation. |
 | `bootstrap_sima` | no | yes | `false`. Let exec upload sima onto an image lacking it. |
-| `ready_timeout_ms`, `ready_poll_ms` | no | yes | 600000, 5000. |
+| `ready_timeout_ms`, `ready_poll_ms` | no | yes | 1200000, 5000. |
 | `[...constraints]` | no | yes | See below. |
 | `root` | yes | yes | `~/sima`. Where migrated searches and delivered programs live. |
 | `binary` | yes | yes | `sima`. The sima binary on that machine. |
@@ -422,7 +422,7 @@ sima reconcile search.toml              # after any hard crash
 ```
 
 - Output during acquisition: `renting cheap[0]: 1x RTX 4090 on <machine> at $/hr`,
-  `waiting for the machine cheap[0] (pulls the image; up to 600s)`,
+  `waiting for the machine cheap[0] (pulls the image; up to 1200s)`,
   `installing the program cheap[0]`, then task lines.
 - `fill = "strict"` fails the search when a member is short; `best-effort`
   proceeds on survivors.
