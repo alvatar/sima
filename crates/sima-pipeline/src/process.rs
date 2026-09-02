@@ -30,7 +30,8 @@ pub(crate) enum Probe {
 }
 
 /// Probes an SSH route, separating a connection failure from a command
-/// failure after the route answered.
+/// failure after the route answered. Exit 255 is ssh's own status and means
+/// unreachable only when ssh is in `argv`, so callers pass ssh argv only.
 pub(crate) fn ssh_contact(argv: &[String], label: &str) -> Result<Probe> {
     let status = command_status(argv)?;
     if status.success() {
