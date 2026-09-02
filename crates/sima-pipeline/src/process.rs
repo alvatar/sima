@@ -33,12 +33,12 @@ pub(crate) enum Probe {
 /// failure after the route answered. Exit 255 is ssh's own status and means
 /// unreachable only when ssh is in `argv`, so callers pass ssh argv only.
 pub(crate) fn ssh_contact(argv: &[String], label: &str) -> Result<Probe> {
-    let status = command_status(argv)?;
+    let (status, said) = command_report(argv)?;
     if status.success() {
         return Ok(Probe::Answered);
     }
     if status.code() == Some(SSH_UNREACHABLE) {
-        return Ok(Probe::Unreachable(unreachable(label, status, "")));
+        return Ok(Probe::Unreachable(unreachable(label, status, &said)));
     }
     Err(Error::Transport(format!(
         "command on {label} exited with {status}"
@@ -76,7 +76,7 @@ fn bootstrap_image_with_argv(
     container: &Container,
     argv: &[String],
 ) -> Result<ImageCheck> {
-    let status = command_status(argv)?;
+    let (status, said) = command_report(argv)?;
     if status.success() {
         return Ok(ImageCheck::Present);
     }
@@ -89,7 +89,7 @@ fn bootstrap_image_with_argv(
         return Ok(ImageCheck::Unreachable(unreachable(
             &format!("{host:?}"),
             status,
-            "",
+            &said,
         )));
     }
     let (place, fix) = match host {
@@ -114,20 +114,34 @@ fn bootstrap_image_with_argv(
     )))
 }
 
-fn unreachable(label: &str, status: ExitStatus, _said: &str) -> Error {
-    Error::Transport(format!("cannot reach {label}: ssh exited with {status}"))
+fn unreachable(label: &str, status: ExitStatus, said: &str) -> Error {
+    let last = said
+        .lines()
+        .rev()
+        .find(|line| !line.trim().is_empty())
+        .map(str::trim)
+        .map_or_else(|| format!("ssh exited with {status}"), str::to_string);
+    Error::Transport(format!("cannot reach {label}: {last}"))
 }
 
-/// Runs `argv`, discarding its streams, and reports whether it exited zero.
-fn command_status(argv: &[String]) -> Result<ExitStatus> {
+/// Runs a silent status probe and returns its exit status and trimmed stderr.
+///
+/// Stderr is captured rather than inherited because the caller polls the
+/// probe. This keeps intermediate failures silent while retaining what the far
+/// side said for the error returned when the probe stops.
+fn command_report(argv: &[String]) -> Result<(ExitStatus, String)> {
     let (program, args) = argv.split_first().expect("a non-empty command vector");
-    own_process_group(&mut Command::new(program))
+    let output = own_process_group(&mut Command::new(program))
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map_err(|e| Error::Transport(format!("running {program:?} failed: {e}")))
+        .stderr(Stdio::piped())
+        .output()
+        .map_err(|e| Error::Transport(format!("running {program:?} failed: {e}")))?;
+    Ok((
+        output.status,
+        String::from_utf8_lossy(&output.stderr).trim().to_string(),
+    ))
 }
 
 /// Runs `argv` and returns its stdout, or an error if it fails or its output
@@ -205,8 +219,6 @@ pub(crate) fn worker_binary() -> Result<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use std::os::unix::fs::PermissionsExt;
-
     use super::*;
 
     fn container(runtime: &str) -> Container {
@@ -317,13 +329,15 @@ mod tests {
 
     #[test]
     fn a_local_runtime_exiting_255_still_reports_the_missing_image() {
-        let dir = tempfile::tempdir().expect("runtime fixture directory");
-        let runtime = dir.path().join("runtime");
-        std::fs::write(&runtime, "#!/bin/sh\nexit 255\n").expect("write the runtime fixture");
-        std::fs::set_permissions(&runtime, std::fs::Permissions::from_mode(0o755))
-            .expect("make the runtime fixture executable");
-        let runtime = runtime.to_string_lossy();
-        let error = match bootstrap_image(None, &container(&runtime)) {
+        let error = match bootstrap_image_with_argv(
+            None,
+            &container("podman"),
+            &[
+                "/bin/sh".to_string(),
+                "-c".to_string(),
+                "exit 255".to_string(),
+            ],
+        ) {
             Err(error) => error,
             Ok(_) => panic!("a local runtime failure must mean the image is absent"),
         };
