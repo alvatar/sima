@@ -39,7 +39,9 @@ pub use stub::STUB_PROVIDER_ID;
 #[cfg(test)]
 mod testutil;
 
-pub use acquire::{AcquireLimits, Admission, UNREPORTED, acquire, never_cancelled};
+pub use acquire::{
+    AcquireLimits, Admission, UNREPORTED, acquire, is_acquisition_cancelled, never_cancelled,
+};
 pub use adopt::adopt;
 pub use budget::{
     Budget, Cost, Exhaustion, OpenSpend, SpendReport, Verdict, assess, now_ms, spend_report,

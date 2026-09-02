@@ -50,6 +50,10 @@ struct OfferRow {
     num_gpus: u32,
     /// VRAM per GPU, in megabytes.
     gpu_ram: f64,
+    /// Highest CUDA level the installed driver is known to support. Null and
+    /// absent both mean the marketplace reports none.
+    #[serde(default)]
+    cuda_max_good: Option<f64>,
     /// The hourly rate, in dollars.
     dph_total: f64,
     /// Host reliability, in `[0, 1]`.
@@ -90,6 +94,7 @@ fn normalize(row: OfferRow) -> Option<Offer> {
         gpu_model: row.gpu_name,
         gpu_count: row.num_gpus,
         vram_mb: row.gpu_ram.round() as u64,
+        cuda: row.cuda_max_good.unwrap_or(0.0),
         price: price::per_hour(row.dph_total)?,
         reliability: row.reliability,
         verified: row.verification == VERIFIED,
@@ -122,6 +127,7 @@ mod tests {
         "gpu_name": "RTX 4090",
         "num_gpus": 2,
         "gpu_ram": 24564.0,
+        "cuda_max_good": 12.4,
         "dph_total": 0.412,
         "reliability": 0.9871,
         "verification": "verified",
@@ -138,6 +144,7 @@ mod tests {
         "gpu_name": "RTX 3090",
         "num_gpus": 1,
         "gpu_ram": 24576.0,
+        "cuda_max_good": null,
         "dph_total": 0.1234565,
         "reliability": 0.5,
         "verification": "unverified",
@@ -177,6 +184,7 @@ mod tests {
         assert_eq!(offer.gpu_model, "RTX 4090");
         assert_eq!(offer.gpu_count, 2);
         assert_eq!(offer.vram_mb, 24_564);
+        assert!((offer.cuda - 12.4).abs() < f64::EPSILON);
         assert_eq!(offer.price, Price(412_000));
         assert!((offer.reliability - 0.9871).abs() < f64::EPSILON);
         assert!(offer.verified);
@@ -192,6 +200,7 @@ mod tests {
         let client = VastClient::new(&server.url(), "k-secret");
         let offers = search(&client)?;
         assert!(!offers[0].verified);
+        assert_eq!(offers[0].cuda, 0.0);
         assert_eq!(offers[0].location, "");
         Ok(())
     }

@@ -258,8 +258,15 @@ pub fn acquire<'a, P: Provider + ?Sized>(
 /// The error a cancelled acquisition returns, naming the cancellation so the
 /// caller tells it from a market that simply had nothing.
 fn cancelled() -> Error {
-    Error::Provider("the acquisition was cancelled".to_string())
+    Error::Provider(ACQUISITION_CANCELLED.to_string())
 }
+
+/// Whether `error` reports an acquisition stopped by its cancellation flag.
+pub fn is_acquisition_cancelled(error: &Error) -> bool {
+    matches!(error, Error::Provider(message) if message == ACQUISITION_CANCELLED)
+}
+
+const ACQUISITION_CANCELLED: &str = "the acquisition was cancelled";
 
 /// The error a walk whose ready budget is spent returns, naming the wait so
 /// the caller tells it from a market that had nothing to offer and from a
@@ -511,7 +518,8 @@ mod tests {
     };
 
     use super::{
-        AcquireLimits, Admission, Ordering, UNREPORTED, acquire, attempt_tag, never_cancelled,
+        AcquireLimits, Admission, Ordering, UNREPORTED, acquire, attempt_tag,
+        is_acquisition_cancelled, never_cancelled,
     };
     use crate::budget::{Budget, Cost};
     use crate::guard::InstanceGuard;
@@ -1457,10 +1465,7 @@ mod tests {
             &cancel,
             UNREPORTED,
         );
-        assert!(matches!(
-            outcome,
-            Err(Error::Provider(message)) if message.contains("cancelled")
-        ));
+        assert!(matches!(outcome, Err(ref error) if is_acquisition_cancelled(error)));
         // Nothing was rented: the walk stopped before the first provision.
         assert!(store.instance_records()?.is_empty());
         assert!(stub.live().is_empty());

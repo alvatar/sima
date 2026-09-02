@@ -22,7 +22,9 @@ mod ceiling;
 mod config;
 mod devices;
 mod domain_registry;
+mod exec;
 mod feed;
+mod fetch;
 #[cfg(test)]
 mod fixtures;
 mod fleet;
@@ -51,11 +53,12 @@ mod task_keys;
 mod timeline;
 
 pub use config::{
-    Container, Fleet, Host, HostClass, HostClassForm, HostForm, LoadedConfig, Orchestrator,
-    OwnedClass, OwnedHost, Pool, ProviderId, Rented, RentedClass, load,
+    Container, ExecConfig, Fleet, Host, HostClass, HostClassForm, HostForm, LoadedConfig,
+    Orchestrator, OwnedClass, OwnedHost, Pool, ProviderId, Rented, RentedClass, load, load_exec,
 };
 pub use devices::DeviceSelector;
 pub use domain_registry::DomainRegistry;
+pub use exec::{ExecAction, ExecObserver, ExecOptions, ExecOutcome, exec, exec_instance_line};
 pub use feed::{
     FOLLOW_PROTOCOL_VERSION, FeedInfo, FollowFrame, LocalFeed, RemoteFeed, SearchFeed,
     follow_serve, local_snapshot, remote_snapshot,
@@ -64,8 +67,11 @@ pub use fleet::Engagement;
 pub use machines::machines;
 pub use migrate::{MigrateOutcome, migrate, recall, sync_serve};
 pub use orchestrate::orchestrate;
+pub use payload::PayloadSpec;
 pub use program_binding::BinaryChange;
-pub use program_delivery::{ProgramDelivery, ingest_program, receive_program};
+pub use program_delivery::{
+    ProgramDelivery, ingest_program, receive_exec_payload, receive_program,
+};
 pub use providers::{ProviderSettings, provider_for};
 pub use remove::{remove, remove_matching};
 pub use report::{ReportRow, report, report_records, report_task_records};

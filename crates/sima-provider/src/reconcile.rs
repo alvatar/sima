@@ -60,16 +60,16 @@ use crate::provider::{InstanceId, InstanceStatus, Provider, TaggedInstance};
 /// holds no lock is normally an orphan of a crash and is destroyed. A migration
 /// breaks that inference: it detaches the far side deliberately, and the local
 /// process may be gone while the rental is working and paid for, so a
-/// [`Rental::Orchestrator`] record has exactly the shape reconciliation reaps.
-/// It is therefore spared unless a caller says otherwise; every other rental is
-/// an orphan when its owner's lock is free.
+/// [`Rental::Orchestrator`] and [`Rental::Exec`] records have exactly the shape
+/// reconciliation reaps. They are therefore spared unless a caller says
+/// otherwise.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReconcileScope {
     /// Rentals carrying workers alone. The default, and what every acquisition
-    /// searches: it must not destroy a working detached migration.
+    /// searches: it preserves detached migrations and execs.
     Workers,
-    /// Every rental, a hosting one included. What `sima reconcile --hosted`
-    /// asks for, when the operator knows no migration is running.
+    /// Every rental, including hosted migrations and execs. What
+    /// `sima reconcile --hosted` asks for.
     Hosted,
 }
 
@@ -97,10 +97,9 @@ pub struct ReconcileReport {
 ///
 /// Runs at the start of every acquisition under [`ReconcileScope::Workers`], so
 /// orphans stop costing money before a new machine is rented — and so a
-/// detached migration, whose rental is working and paid for while nothing local
-/// holds a lock, is not destroyed by an unrelated command that happens to rent
-/// against the same store. A ledger holding no record for this provider reaches
-/// no provider API at all.
+/// detached hosted work, whose rental is working and paid for while nothing
+/// local holds a lock, is preserved when another command rents against the same
+/// store. A ledger holding no record for this provider reaches no provider API.
 pub fn reconcile<P: Provider + ?Sized>(
     provider: &P,
     store: &Store,
@@ -642,6 +641,29 @@ mod tests {
         assert_eq!(report.cleared.len(), 2);
         assert!(store.instance_records()?.is_empty());
         assert!(stub.live().is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn an_exec_rental_is_spared_by_workers_and_reaped_by_hosted() -> Result<()> {
+        let (_dir, store) = temp_store();
+        let stub = StubProvider::new(vec![stub_offer("a", 100_000)]);
+        let instance = provisioned(&stub, 0, "sima-exec-0");
+        let owner = sample_search(9);
+        store.put_instance(&instance_record_as(
+            "sima-exec-0",
+            live_state(&instance),
+            owner,
+            Rental::Exec,
+        ))?;
+
+        let report = reconcile(&stub, &store, ReconcileScope::Workers)?;
+        assert!(report.cleared.is_empty());
+        assert_eq!(stub.live().len(), 1);
+        let report = reconcile(&stub, &store, ReconcileScope::Hosted)?;
+        assert_eq!(report.cleared, ["sima-exec-0"]);
+        assert!(stub.live().is_empty());
+        assert_eq!(spend_entries(&store, &owner)?.len(), 1);
         Ok(())
     }
 }

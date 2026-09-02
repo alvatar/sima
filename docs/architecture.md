@@ -11,12 +11,12 @@ govern it are stated first.
 
 Execution has two contracts:
 
-- **search execution** — integrated work with content-addressed task identity,
+- **a search** — integrated work with content-addressed task identity,
   catalog artifacts, a journal, and resumable snapshots and checkpoints.
-- **exec execution** — one opaque command on a machine, with files fetched home
+- **an exec** — one opaque command on a machine, with files fetched home
   as its result and no search identity, journal, or resume protocol.
 
-Placement is orthogonal to the contract. Search execution supports three
+Placement is orthogonal to the contract. A search supports three
 placements:
 
 - **local** — one machine runs the search end to end.
@@ -2734,6 +2734,84 @@ replacement flow through [`acquire`](#the-acquisition-loop), so one derivation
 point covers both. A machine the provider reports no identifier for normalizes
 to an empty machine, which records no incidents and is never excluded.
 
+### Exec
+
+An exec runs one opaque shell command on one rented machine. `[exec]` names a
+rented `[host.*]`, the payload sent there, the command, the output globs, and
+the local fetch directory. The command string owns its shell environment and
+working-directory changes. It starts at the mutable payload tree root.
+
+The store boundary is narrower than for a search. An exec uses the store for:
+
+- the instance ledger that makes adoption durable;
+- the spend and reputation ledgers;
+- content-addressed payload objects shared across deliveries;
+- the owner lock that serializes invocations of one job.
+
+Search identity, tasks, journals, snapshots, manifests, and catalog artifacts
+remain exclusive to a search. The instance ledger still uses `SearchId` as its
+owner key; an exec derives that key from `sima-exec:<host-entry-name>` and uses
+the `Exec` rental role. The key stays stable when the command, payload, or
+constraints change, while the config's store scopes it to that job's durable
+state.
+
+```mermaid
+flowchart TD
+    A["sima exec job.toml"] --> B{"live Exec rental<br/>for this owner?"}
+    B -- yes --> C["adopt the standing machine"]
+    B -- no --> D["acquire from the declared host constraints"]
+    D --> C
+    C --> E{"remote command running?"}
+    E -- "plain start" --> F["refuse; name --attach and --end"]
+    E -- "--attach" --> G["replay and follow exec.log"]
+    E -- idle --> H["bootstrap sima when declared<br/>deliver and install changed payload"]
+    H --> I["start one detached shell command"]
+    I --> G
+    G --> J{"stream ending"}
+    J -- "Ctrl-C" --> K["detach; command and rental continue"]
+    J -- "command exit" --> L["fetch output globs and exec.log"]
+    J -- "budget exhausted" --> M["kill command"]
+    M --> L
+    L --> N{"--one-shot or exhausted?"}
+    N -- yes --> O["release rental and write spend"]
+    N -- no --> P["keep rental for adoption"]
+    C --> Q["--end: kill if running, fetch, release"]
+```
+
+**Keep and adoption define the lifecycle.** A completed command leaves its
+machine standing by default. The next plain invocation adopts that machine and
+starts a fresh command after confirming the prior one finished. `--one-shot`
+releases after fetch. `--end` kills a running command when present, fetches,
+and releases. `--attach` rents and starts nothing; it follows the running log
+from the beginning. A plain invocation refuses while a command is running so
+starting and watching remain distinct operator actions.
+
+**The remote job tree is mutable.** Under the host root, one directory per
+owner holds `payload/`, `payload.digest`, `exec.log`, `exec.pid`, and
+`exec.status`. Content-addressed delivery refreshes every manifest file in
+`payload/` and preserves untracked files such as build caches. A changed digest
+runs the install script before its marker is written; a failed install leaves
+the marker pending so the next invocation runs it again.
+
+The opaque command starts detached and writes combined output to `exec.log`.
+Its exit code lands in `exec.status`. Completion fetches every declared output
+glob plus the log through a tar stream over the remote shell, including after a
+nonzero command exit. Unmatched globs warn and leave the remaining fetch intact.
+The command's exit code becomes the CLI exit code; orchestration faults use 1.
+
+**Attached time is the enforcement window.** Budget assessment runs every ten
+seconds while an invocation follows the command. Exhaustion kills the command,
+fetches its files, and releases the rental. A detached command continues to
+bill until a later attach, `--end`, or reconciliation assesses or closes it.
+`reconcile` spares `Exec` rentals in worker scope and reaps them with
+`--hosted`, matching hosted orchestrator rentals.
+
+A specialized image may set `bootstrap_sima = true`. Provisioning probes the
+configured remote binary and, when absent, uploads the `sima-static` artifact
+beside the local executable before content-addressed delivery. Rented host
+`env` entries flow to provider instance creation, and `min_cuda` participates
+in offer qualification.
+
 ### Migration
 
 Everything below this composes to distribute **workers**: the store and the
@@ -3166,15 +3244,25 @@ command form keeps its shape whether or not a host is named:
   restarting never read alike. The figures are the search's own `SearchStarted`,
   counted from the store's records, so a migration's follow states the same
   ledger the far search does.
-- **`--quiet`** — taken by the three verbs that render a search's stream (`search`,
-  `migrate`, `recall`) and split out of the arguments before the command
+- **`--quiet`** — taken by the four verbs that render a live stream (`search`,
+  `exec`, `migrate`, `recall`) and split out of the arguments before the command
   match, as `--accept-binary` is, so it composes with the other flags in
   either order. It narrows the stream to the search's own progress — the search id,
   its start, its commits, its ending — and anything gone wrong. What it drops
   says where a placement has got to: the phases of putting a search on machines,
   and a rented machine coming online. It is a rendering choice and nothing
   more: every line it drops is still journaled, so a quiet search's journal is a
-  loud one's.
+  loud one's. For an exec it leaves the remote command's lines and suppresses
+  orchestration narration.
+- **`sima exec <config.toml>`** — runs the `[exec].command` on the rented host
+  the section names, streams its combined log, fetches declared output globs
+  and the log, and returns the command's exit code. The machine remains for
+  adoption after completion. `--one-shot` releases after fetch; `--attach`
+  follows the command already running there; `--end` kills when needed,
+  fetches, and releases. `--fetch-to <dir>` overrides the configured local
+  destination for start, attach, one-shot, and end. The command-line path is
+  relative to the current directory; `[exec].fetch_to` is relative to the
+  config file. See [Exec](#exec).
 - **`sima migrate <config.toml>`** — moves the search onto the machine
   `[orchestrator].migrate` names, follows it there through the same renderer
   `search` uses, and brings the results home; see
@@ -3333,7 +3421,8 @@ unreachable, or that would ask for a password, fails promptly with a named
 cause. A host that authenticates and then stalls before its first frame is a
 live connection, and the near side waits on it.
 
-Exit codes (shared across `search`, `migrate`, `recall`, `tui`, and `follow`):
+Search command exit codes (shared across `search`, `migrate`, `recall`, `tui`,
+and `follow`):
 
 - **0** — the search finalized, `status` answered, `follow` reached the end of
   a search nobody is driving, which is resumable rather than failed, or a migration
@@ -3342,6 +3431,11 @@ Exit codes (shared across `search`, `migrate`, `recall`, `tui`, and `follow`):
 - **130** — interrupted, store resumable;
 - **1** — everything else: infrastructure fault, config error, usage error, and
   a `migrate` or `recall` that came home with tasks outstanding.
+
+An exec returns the remote command's exit code verbatim. Detach, successful
+end, and an end with no standing instance return 0. Its orchestration, config,
+and usage faults return 1, so diagnostic text distinguishes a remote exit 1
+from a sima fault.
 
 ## Determinism proof obligations
 

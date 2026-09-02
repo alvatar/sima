@@ -52,6 +52,13 @@ impl VastConfig {
         )
     }
 
+    /// Adds the instance environment. An empty table keeps the create request
+    /// free of an `env` field.
+    pub fn with_env(mut self, env: BTreeMap<String, String>) -> VastConfig {
+        self.env = (!env.is_empty()).then_some(env);
+        self
+    }
+
     /// Configuration carrying `api_key` verbatim, rejecting an empty one: a
     /// backend without a key reaches nothing, and failing at construction
     /// names the cause once instead of at every call.
@@ -73,6 +80,8 @@ impl VastConfig {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use super::{API_KEY_VAR, DEFAULT_BASE_URL, VastConfig};
     use sima_core::Error;
 
@@ -94,5 +103,16 @@ mod tests {
             failure,
             Err(Error::Provider(message)) if message.contains(API_KEY_VAR)
         ));
+    }
+
+    #[test]
+    fn instance_environment_is_kept_verbatim_and_empty_stays_absent() {
+        let base = VastConfig::keyed("k-secret".to_string(), "image", 32).expect("config");
+        assert!(base.clone().with_env(BTreeMap::new()).env.is_none());
+        let env = BTreeMap::from([
+            ("NVIDIA_DRIVER_CAPABILITIES".to_string(), "all".to_string()),
+            ("ROLE".to_string(), "exec".to_string()),
+        ]);
+        assert_eq!(base.with_env(env.clone()).env, Some(env));
     }
 }

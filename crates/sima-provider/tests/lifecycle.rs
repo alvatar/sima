@@ -22,6 +22,7 @@ fn offer(id: &str, price: u64) -> Offer {
         gpu_model: "RTX 4090".to_string(),
         gpu_count: 1,
         vram_mb: 24_576,
+        cuda: 12.4,
         price: Price(price),
         reliability: 0.99,
         verified: true,

@@ -8,13 +8,14 @@
 //! rather than one arm in each.
 //!
 //! What separates the two callers is settings, not dispatch: an acquisition
-//! knows the image and disk an instance boots with, while a reconciliation only
-//! reads and destroys and supplies neither.
+//! knows the image, environment, and disk an instance boots with, while a
+//! reconciliation only reads and destroys and supplies none.
 
 use sima_core::{Error, Result};
 use sima_provider::stub::StubProvider;
 use sima_provider::{Offer, OfferId, Price, Provider, SshEndpoint};
 use sima_provider_vast::{VastConfig, VastProvider};
+use std::collections::BTreeMap;
 
 /// The environment channel that points the stub backend at a machine that is
 /// really there, as `user@host:port`.
@@ -31,6 +32,9 @@ pub struct ProviderSettings<'a> {
     /// request only when an instance is created.
     pub image: &'a str,
     pub disk_gb: u64,
+    /// Environment assigned when an instance is created. Empty means the
+    /// provider request omits the field.
+    pub env: Option<&'a BTreeMap<String, String>>,
     /// How many machines the caller intends to acquire, which the stub's
     /// scripted marketplace sizes itself to.
     pub count: usize,
@@ -43,6 +47,7 @@ impl ProviderSettings<'_> {
         ProviderSettings {
             image: "",
             disk_gb: 0,
+            env: None,
             count: 0,
         }
     }
@@ -60,7 +65,8 @@ impl ProviderSettings<'_> {
 pub fn provider_for(id: &str, settings: &ProviderSettings<'_>) -> Result<Box<dyn Provider + Sync>> {
     match id {
         sima_provider_vast::PROVIDER_ID => {
-            let config = VastConfig::from_env(settings.image, settings.disk_gb)?;
+            let config = VastConfig::from_env(settings.image, settings.disk_gb)?
+                .with_env(settings.env.cloned().unwrap_or_default());
             Ok(Box::new(VastProvider::new(config)))
         }
         sima_provider::STUB_PROVIDER_ID => {
@@ -92,6 +98,7 @@ fn stub_offers(count: usize) -> Vec<Offer> {
             gpu_model: "stub-gpu".to_string(),
             gpu_count: 1,
             vram_mb: 24_000,
+            cuda: 99.0,
             // Distinct rates keep the cheapest-per-hour ranking a total order;
             // $0.10/hr and up, low enough to sit under an ordinary price cap.
             price: Price(100_000 + n as u64),

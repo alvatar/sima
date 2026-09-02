@@ -117,6 +117,37 @@ pub struct ProgramDelivery {
     env: Vec<String>,
 }
 
+/// One exec payload prepared for content-addressed delivery.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ExecDelivery {
+    payload: Hash,
+}
+
+impl ExecDelivery {
+    /// Arguments for the mutable exec form of `sync-serve`.
+    pub(crate) fn args(&self, dir: &str) -> Vec<String> {
+        vec![
+            "sync-serve".to_string(),
+            dir.to_string(),
+            "--exec-payload".to_string(),
+            self.payload.to_string(),
+        ]
+    }
+
+    /// Sends the payload closure through the far-side sync session.
+    pub(crate) fn send(&self, store: &Store, argv: &[String]) -> Result<SyncReport> {
+        let closure = payload::closure(store, &self.payload)?;
+        sync_against(store, &[], ObjectScope::Named(&closure), argv)
+    }
+}
+
+/// Ingests one exec payload into the shipping store.
+pub(crate) fn ingest_exec(spec: &crate::PayloadSpec, store: &Store) -> Result<ExecDelivery> {
+    Ok(ExecDelivery {
+        payload: payload::ingest(store, spec)?,
+    })
+}
+
 impl ProgramDelivery {
     /// The payload digest this delivery installs, which is what the search expects
     /// back from every worker it spawns on a machine that received it.
@@ -447,6 +478,27 @@ pub fn receive_program(
     Ok(report)
 }
 
+/// Receives an exec payload and materializes it over the job's mutable tree.
+/// The install runs only when the digest differs from the successful marker.
+pub fn receive_exec_payload(
+    dir: &Path,
+    payload: &Hash,
+    input: &mut dyn std::io::Read,
+    output: &mut dyn std::io::Write,
+) -> Result<SyncReport> {
+    let store = Store::open(dir.join(STORE_DIR))?;
+    let named = [*payload];
+    let report = store.sync(
+        &[],
+        ObjectScope::Named(&named),
+        input,
+        output,
+        sima_store::SyncRole::Responder,
+    )?;
+    payload::install_mutable(&store, payload, dir)?;
+    Ok(report)
+}
+
 /// The program tree the payload `digest` names installs into, under the
 /// delivery directory `dir`.
 pub(crate) fn program_tree(dir: &Path, digest: &Hash) -> ProgramTree {
@@ -491,6 +543,22 @@ mod tests {
                 &delivery.payload.to_string(),
                 "--sdk",
                 &sdk.to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn exec_delivery_has_a_distinct_sync_serve_form() {
+        let delivery = ExecDelivery {
+            payload: digest("an exec payload"),
+        };
+        assert_eq!(
+            delivery.args("~/sima/exec/job"),
+            [
+                "sync-serve",
+                "~/sima/exec/job",
+                "--exec-payload",
+                &delivery.payload.to_string(),
             ]
         );
     }

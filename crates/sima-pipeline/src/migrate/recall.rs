@@ -107,7 +107,14 @@ pub fn recall(loaded: &LoadedConfig, observer: Observer<'_>) -> Result<MigrateOu
             // Adoption only: a recall never rents. A machine that is not there
             // to take back is one this search is already off, and what is left of
             // the search is whatever the local store holds.
-            let Some(guard) = adopt(provider.as_ref(), &store, &lock, &limits)? else {
+            let Some(guard) = adopt(
+                provider.as_ref(),
+                &store,
+                &lock,
+                sima_store::Rental::Orchestrator,
+                &limits,
+            )?
+            else {
                 return settle(
                     &store,
                     loaded,

@@ -111,6 +111,27 @@ pub(crate) fn built_worker() -> PathBuf {
     worker
 }
 
+/// Builds the `sima` binary once and returns its target-profile path.
+pub(crate) fn built_sima() -> PathBuf {
+    static BUILD: std::sync::Once = std::sync::Once::new();
+    BUILD.call_once(|| {
+        let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
+        let status = std::process::Command::new(cargo)
+            .args(["build", "-p", "sima"])
+            .status()
+            .expect("build sima");
+        assert!(status.success(), "building sima failed");
+    });
+    let exe = std::env::current_exe().expect("the test executable's path");
+    let dir = exe
+        .parent()
+        .and_then(std::path::Path::parent)
+        .expect("target profile above the test executable");
+    let sima = dir.join("sima");
+    assert!(sima.is_file(), "{} is built", sima.display());
+    sima
+}
+
 /// Loads `text` as a config file in a fresh temporary directory, for the unit
 /// tests that exercise the loaded shape rather than the file's location. The
 /// directory is removed at once: nothing here opens the store the config names.

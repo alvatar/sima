@@ -46,6 +46,7 @@ pub(crate) fn provider_for_rental(rental: &Rental<'_>) -> Result<Box<dyn Provide
         &ProviderSettings {
             image: &rental.spec.image,
             disk_gb: rental.spec.disk_gb,
+            env: Some(&rental.spec.env),
             count: rental.count,
         },
     )

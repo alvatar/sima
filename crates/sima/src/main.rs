@@ -21,16 +21,18 @@
 //! is constructed and no rental credential is read. `migrate` moves the whole
 //! search — its store and its orchestrator — onto the one machine
 //! `[orchestrator].migrate` names, and brings the results back.
+//! `exec` is the separate command contract: one opaque `[exec].command` on
+//! one rented `[host.*]`, with its log and declared output files fetched home.
+//! It uses the store only for rental accounting and payload objects.
 //!
 //! A search through a program a `[domain.*]` entry names stops when that
 //! program's build changed since the search last ran; `--accept-binary` is the
 //! invocation stating that the changed build should drive it anyway.
 //!
-//! `search`, `migrate`, and `recall` render a search's stream as it happens, and
-//! `--quiet` narrows that to the search's own progress: what it is, what it
-//! started, what it committed, how it ended, and anything gone wrong. The
-//! lines it drops say where a placement has got to, which is for an operator
-//! watching one rather than for whatever reads the output of a script.
+//! `search`, `exec`, `migrate`, and `recall` render a live stream. On a search
+//! command, `--quiet` narrows that to the search's own progress and errors. On
+//! an exec, it leaves only the remote command's lines. The lines it drops state
+//! orchestration progress for an operator watching the placement.
 //!
 //! `sdk` writes the SDK this binary carries into a directory, which is how a
 //! program is developed against the package the searches that spawn it vend.
@@ -39,11 +41,15 @@
 //! renders output, registers the interrupt flag, and maps outcomes to exit
 //! codes:
 //!
-//! - 0 — the search finalized (or `status` answered);
+//! - 0 — the search finalized, a query answered, or an exec detached;
 //! - 2 — a definitive candidate failure;
 //! - 130 — interrupted by Ctrl-C, store resumable;
 //! - 1 — everything else: infrastructure fault, config error, usage error, and
 //!   a `migrate` that came home with tasks outstanding.
+//!
+//! A completed exec instead returns its remote command's exit code verbatim;
+//! code 1 can therefore mean either the command or sima failed, and the
+//! diagnostic text distinguishes them.
 
 mod follow;
 mod migrate;
@@ -60,11 +66,13 @@ use std::sync::atomic::AtomicBool;
 
 use sima_core::{Error, Hash, Result};
 use sima_pipeline::{
-    BinaryChange, Engagement, FeedInfo, LoadedConfig, LocalFeed, Record, RemoteFeed, RemovalReport,
-    ReportRow, Sdk, SearchControl, SearchFeed, SearchId, SearchOutcome, SearchState, SearchStatus,
-    SearchTimeline, TaskHistory, failures_records, follow_serve, load, local_snapshot, orchestrate,
-    receive_program, remote_snapshot, report_records, report_task_records, seeded_status,
-    status_records, sync_serve, task_history_records, timeline_records,
+    BinaryChange, Engagement, ExecAction, ExecObserver, ExecOptions, ExecOutcome, FeedInfo,
+    LoadedConfig, LocalFeed, Record, RemoteFeed, RemovalReport, ReportRow, Sdk, SearchControl,
+    SearchFeed, SearchId, SearchOutcome, SearchState, SearchStatus, SearchTimeline, TaskHistory,
+    exec, exec_instance_line, failures_records, follow_serve, load, load_exec, local_snapshot,
+    orchestrate, receive_exec_payload, receive_program, remote_snapshot, report_records,
+    report_task_records, seeded_status, status_records, sync_serve, task_history_records,
+    timeline_records,
 };
 use sima_provider::ReconcileScope;
 
@@ -87,7 +95,9 @@ const LOOSE_OBJECT_WARN_THRESHOLD: u64 = 100_000;
 /// The verbs that open a local store to read or to drive, and so are where
 /// a recommendation to pack it belongs. `tui` is excluded because its
 /// alternate screen swallows stderr, and `pack` because it is the answer.
-const STORE_OPENING_VERBS: [&str; 6] = ["search", "status", "report", "migrate", "recall", "rm"];
+const STORE_OPENING_VERBS: [&str; 7] = [
+    "search", "exec", "status", "report", "migrate", "recall", "rm",
+];
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -100,7 +110,17 @@ fn main() -> ExitCode {
         && let [verb, config, ..] = args[..]
         && STORE_OPENING_VERBS.contains(&verb)
     {
-        warn_on_loose_objects(&resolve_config(config));
+        warn_on_loose_objects(&resolve_config(config), verb);
+    }
+    if host.is_none()
+        && let Some((config, action, fetch_to)) = exec_form(&args)
+    {
+        return exec_command(
+            &resolve_config(config),
+            action,
+            fetch_to.map(Path::new),
+            narration,
+        );
     }
     match args[..] {
         // The write commands never observe: `search` drives a search, which happens
@@ -167,6 +187,9 @@ fn main() -> ExitCode {
         ["sync-serve", dir, "--payload", payload, "--sdk", sdk] if host.is_none() => {
             receive_program_command(Path::new(dir), payload, Some(sdk))
         }
+        ["sync-serve", dir, "--exec-payload", payload] if host.is_none() => {
+            receive_exec_payload_command(Path::new(dir), payload)
+        }
         // The SDK this binary carries, written out for developing a program
         // outside a search. It opens no store and reads no config.
         ["sdk", language, "--out", out] if host.is_none() => sdk_command(language, Path::new(out)),
@@ -198,6 +221,12 @@ fn main() -> ExitCode {
                  \x20      sima search <config> --fleet           drive it on this machine and [fleet]\n\
                  \x20      sima search <config> --accept-binary   continue through a changed program\n\
                  \x20      sima search <config> --quiet           print the search's own progress and no more\n\
+                 \x20      sima exec <config>                     run [exec].command on its rented host\n\
+                 \x20      sima exec <config> --attach            replay and follow its running command\n\
+                 \x20      sima exec <config> --one-shot          run, fetch, and destroy the instance\n\
+                 \x20      sima exec <config> --end               stop, fetch, and destroy the instance\n\
+                 \x20      sima exec <config> --fetch-to <dir>    fetch into a directory relative to the current directory\n\
+                 \x20      sima exec <config> --quiet             print only the remote command's output\n\
                  \x20      sima status <config>                   report the search's state\n\
                  \x20      sima status <config> --task <key>      print one task's attempt timeline\n\
                  \x20      sima status <config> --failed          digest the tasks that did not commit\n\
@@ -294,13 +323,13 @@ fn split_binary_change<'a>(args: &[&'a str]) -> (Vec<&'a str>, BinaryChange) {
 /// print. It composes with the other flags in either order, as
 /// [`split_binary_change`] does, rather than multiplying the command forms.
 ///
-/// The three verbs that render a live stream take it — `search`, `migrate`, and
-/// `recall`. Every other command keeps the flag among its arguments, where it
-/// matches no form and falls to the usage error.
+/// The four verbs that render a live stream take it — `search`, `exec`,
+/// `migrate`, and `recall`. Every other command keeps the flag among its
+/// arguments, where it matches no form and falls to the usage error.
 fn split_quiet<'a>(args: &[&'a str]) -> (Vec<&'a str>, Narration) {
     if !matches!(
         args.first(),
-        Some(&"search") | Some(&"migrate") | Some(&"recall")
+        Some(&"search") | Some(&"exec") | Some(&"migrate") | Some(&"recall")
     ) {
         return (args.to_vec(), Narration::Full);
     }
@@ -317,6 +346,45 @@ fn split_quiet<'a>(args: &[&'a str]) -> (Vec<&'a str>, Narration) {
         })
         .collect();
     (rest, narration)
+}
+
+/// Parses one user-facing `sima exec` form. Lifecycle flags are mutually
+/// exclusive, while `--fetch-to` composes with every action that can fetch in
+/// either order.
+fn exec_form<'a>(args: &[&'a str]) -> Option<(&'a str, ExecAction, Option<&'a str>)> {
+    let ["exec", config, rest @ ..] = args else {
+        return None;
+    };
+    let mut attach = false;
+    let mut one_shot = false;
+    let mut end = false;
+    let mut fetch_to = None;
+    let mut index = 0;
+    while index < rest.len() {
+        match rest[index] {
+            "--attach" if !attach => attach = true,
+            "--one-shot" if !one_shot => one_shot = true,
+            "--end" if !end => end = true,
+            "--fetch-to"
+                if fetch_to.is_none()
+                    && index + 1 < rest.len()
+                    && !rest[index + 1].starts_with("--") =>
+            {
+                fetch_to = Some(rest[index + 1]);
+                index += 1;
+            }
+            _ => return None,
+        }
+        index += 1;
+    }
+    let action = match (attach, one_shot, end) {
+        (false, false, false) => ExecAction::Start { one_shot: false },
+        (false, true, false) => ExecAction::Start { one_shot: true },
+        (true, false, false) => ExecAction::Attach,
+        (false, false, true) => ExecAction::End,
+        _ => return None,
+    };
+    Some((config, action, fetch_to))
 }
 
 /// The search a read command addresses: one on this machine, or one on the host
@@ -402,6 +470,139 @@ fn search_command(
         Ok(outcome) => ExitCode::from(outcome_exit_code(&outcome)),
         Err(e) => report(e),
     }
+}
+
+/// Terminal observer for an exec. Remote command lines always reach stdout;
+/// orchestration lines do so only at full narration.
+struct ExecProgress {
+    narration: Narration,
+    machine: Option<(String, u64)>,
+}
+
+impl ExecObserver for ExecProgress {
+    fn command(&mut self, line: &str) {
+        println!("{line}");
+    }
+
+    fn narration(&mut self, line: &str) {
+        if self.narration == Narration::Full {
+            println!("{line}");
+        }
+    }
+
+    fn instance(&mut self, id: &str, rate_microusd_hour: u64, adopted: bool) {
+        self.machine = Some((id.to_string(), rate_microusd_hour));
+        self.narration(&exec_instance_line(id, rate_microusd_hour, adopted));
+    }
+}
+
+impl ExecProgress {
+    /// The adopted or acquired machine, formatted for a terminal lifecycle
+    /// line. Every outcome past acquisition has one.
+    fn machine(&self) -> String {
+        let (id, rate) = self
+            .machine
+            .as_ref()
+            .expect("an exec outcome past acquisition names its machine");
+        format!("instance {id} at ${:.6}/hr", *rate as f64 / 1_000_000.0)
+    }
+}
+
+/// `sima exec <config.toml>` and its lifecycle forms: registers the interrupt
+/// flag, drives one remote command, renders its terminal state, and preserves
+/// the remote command's exit code.
+fn exec_command(
+    config: &Path,
+    action: ExecAction,
+    fetch_to: Option<&Path>,
+    narration: Narration,
+) -> ExitCode {
+    let interrupt = match register_interrupt() {
+        Ok(interrupt) => interrupt,
+        Err(error) => return report(error),
+    };
+    let fetch_to = fetch_to.map(Path::to_path_buf);
+    let options = ExecOptions { action, fetch_to };
+    let mut progress = ExecProgress {
+        narration,
+        machine: None,
+    };
+    match exec(config, &options, &interrupt, &mut progress) {
+        Ok(ExecOutcome::Completed(code)) => {
+            if narration == Narration::Full {
+                match action {
+                    ExecAction::Start { one_shot: true } => {
+                        println!(
+                            "completed with exit code {code}; released {}",
+                            progress.machine()
+                        );
+                    }
+                    ExecAction::Start { one_shot: false } | ExecAction::Attach => println!(
+                        "completed with exit code {code}; kept {}; end with sima exec {} --end",
+                        progress.machine(),
+                        config.display()
+                    ),
+                    ExecAction::End => unreachable!("end never completes a command"),
+                }
+            }
+            ExitCode::from(exec_exit_code(code))
+        }
+        Ok(ExecOutcome::Detached) => {
+            if narration == Narration::Full {
+                println!(
+                    "detached from {}: attach with sima exec {} --attach; end with sima exec {} --end",
+                    progress.machine(),
+                    config.display(),
+                    config.display()
+                );
+            }
+            ExitCode::SUCCESS
+        }
+        Ok(ExecOutcome::Abandoned { kept }) => {
+            if narration == Narration::Full {
+                if kept {
+                    println!(
+                        "abandoned before start; kept {}; end with sima exec {} --end",
+                        progress.machine(),
+                        config.display()
+                    );
+                } else if progress.machine.is_some() {
+                    println!("abandoned before start; released {}", progress.machine());
+                } else {
+                    println!("abandoned before start; acquisition cancelled");
+                }
+            }
+            ExitCode::SUCCESS
+        }
+        Ok(ExecOutcome::Ended) => {
+            if narration == Narration::Full {
+                println!("ended: outputs fetched and instance released");
+            }
+            ExitCode::SUCCESS
+        }
+        Ok(ExecOutcome::NoInstance) => {
+            if narration == Narration::Full {
+                println!("no standing instance for this exec");
+            }
+            ExitCode::SUCCESS
+        }
+        Ok(ExecOutcome::BudgetExhausted(exhaustion)) => {
+            if narration == Narration::Full {
+                println!(
+                    "budget exhausted ({exhaustion:?}); outputs fetched and released {}",
+                    progress.machine()
+                );
+            }
+            ExitCode::from(EXIT_ERROR)
+        }
+        Err(error) => report(error),
+    }
+}
+
+/// Converts the shell's command status to the process exit-code range. A
+/// malformed remote status is an orchestration fault.
+fn exec_exit_code(code: i32) -> u8 {
+    u8::try_from(code).unwrap_or(EXIT_ERROR)
 }
 
 /// Loads the config and drives its search.
@@ -736,6 +937,22 @@ fn receive_program_command(dir: &Path, payload: &str, sdk: Option<&str>) -> Exit
     }
 }
 
+/// `sima sync-serve <dir> --exec-payload <digest>`: receives an exec payload
+/// into its shared object cache and materializes it over the mutable job tree.
+fn receive_exec_payload_command(dir: &Path, payload: &str) -> ExitCode {
+    let payload = match Hash::from_hex(payload) {
+        Ok(payload) => payload,
+        Err(error) => return report(error),
+    };
+    let stdin = std::io::stdin();
+    let stdout = std::io::stdout();
+    let (mut input, mut output) = (stdin.lock(), stdout.lock());
+    match receive_exec_payload(dir, &payload, &mut input, &mut output) {
+        Ok(_) => ExitCode::SUCCESS,
+        Err(error) => report(error),
+    }
+}
+
 /// `sima sdk <language> --out <dir>`: writes the SDK this binary carries under
 /// `<dir>`, so a program can be developed against the package the searches that
 /// spawn it will vend.
@@ -815,13 +1032,21 @@ fn searches_command(store: &Path) -> ExitCode {
 /// cannot be measured says nothing here, because the command itself is
 /// about to report whatever is wrong with far better context. A store that
 /// does not exist yet is left alone rather than opened, since opening one
-/// creates it and the query commands are read-only about that.
-fn warn_on_loose_objects(config: &Path) {
-    let Ok(loaded) = load(config) else { return };
-    if !loaded.store.is_dir() {
+/// creates it and the query commands are read-only about that. `verb` selects
+/// the config contract, so an exec warning resolves no search program.
+fn warn_on_loose_objects(config: &Path, verb: &str) {
+    let store_path = match if verb == "exec" {
+        load_exec(config).map(|loaded| loaded.store)
+    } else {
+        load(config).map(|loaded| loaded.store)
+    } {
+        Ok(store) => store,
+        Err(_) => return,
+    };
+    if !store_path.is_dir() {
         return;
     }
-    let Ok(store) = sima_store::Store::open(&loaded.store) else {
+    let Ok(store) = sima_store::Store::open(&store_path) else {
         return;
     };
     let Ok(estimate) = store.loose_object_estimate() else {
@@ -829,8 +1054,8 @@ fn warn_on_loose_objects(config: &Path) {
     };
     if estimate >= LOOSE_OBJECT_WARN_THRESHOLD {
         eprintln!(
-            "store holds ~{estimate} loose objects; search `sima pack {}` to consolidate",
-            loaded.store.display()
+            "store holds ~{estimate} loose objects; run `sima pack {}` to consolidate",
+            store_path.display()
         );
     }
 }
@@ -1065,6 +1290,58 @@ mod tests {
         let (rest, accept) = split_change(&["status", "exp.toml", "--accept-binary"]);
         assert_eq!(rest, ["status", "exp.toml", "--accept-binary"]);
         assert_eq!(accept, BinaryChange::Refuse);
+    }
+
+    #[test]
+    fn exec_forms_dispatch_to_the_declared_action() {
+        assert_eq!(
+            exec_form(&["exec", "job.toml"]),
+            Some(("job.toml", ExecAction::Start { one_shot: false }, None))
+        );
+        assert_eq!(
+            exec_form(&["exec", "job.toml", "--attach"]),
+            Some(("job.toml", ExecAction::Attach, None))
+        );
+        assert_eq!(
+            exec_form(&["exec", "job.toml", "--attach", "--fetch-to", "results"]),
+            Some(("job.toml", ExecAction::Attach, Some("results")))
+        );
+        assert_eq!(
+            exec_form(&["exec", "job.toml", "--fetch-to", "results", "--one-shot",]),
+            Some((
+                "job.toml",
+                ExecAction::Start { one_shot: true },
+                Some("results"),
+            ))
+        );
+        assert_eq!(
+            exec_form(&["exec", "job.toml", "--end", "--fetch-to", "results"]),
+            Some(("job.toml", ExecAction::End, Some("results")))
+        );
+    }
+
+    #[test]
+    fn malformed_exec_forms_fall_through_to_usage() {
+        for args in [
+            &["exec"][..],
+            &["exec", "job.toml", "--attach", "--one-shot"],
+            &["exec", "job.toml", "--end", "--one-shot"],
+            &["exec", "job.toml", "--fetch-to"],
+            &["exec", "job.toml", "--fetch-to", "--one-shot"],
+            &["exec", "job.toml", "--fetch-to", "a", "--fetch-to", "b"],
+            &["exec", "job.toml", "--unknown"],
+        ] {
+            assert_eq!(exec_form(args), None, "{args:?}");
+        }
+    }
+
+    #[test]
+    fn exec_preserves_every_shell_exit_code() {
+        for code in 0..=u8::MAX {
+            assert_eq!(exec_exit_code(i32::from(code)), code);
+        }
+        assert_eq!(exec_exit_code(-1), EXIT_ERROR);
+        assert_eq!(exec_exit_code(256), EXIT_ERROR);
     }
 
     #[test]

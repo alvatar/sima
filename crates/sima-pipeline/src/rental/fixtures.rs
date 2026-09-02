@@ -42,6 +42,8 @@ pub(super) fn spec() -> Rented {
     Rented {
         provider: ProviderId::Stub,
         image: "ghcr.io/alvatar/sima:latest".to_string(),
+        env: Default::default(),
+        bootstrap_sima: false,
         disk_gb: 32,
         ready_timeout: Duration::from_millis(500),
         ready_poll: Duration::ZERO,
@@ -118,6 +120,7 @@ pub(super) fn offer(id: &str, price: u64) -> Offer {
         gpu_model: "stub-gpu".to_string(),
         gpu_count: 1,
         vram_mb: 24_000,
+        cuda: 99.0,
         price: Price(price),
         reliability: 1.0,
         verified: true,

@@ -17,8 +17,12 @@ use sima_core::{Error, Result};
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct FileConfig {
-    pub(super) search: SearchSection,
-    pub(super) config: ConfigSection,
+    /// The `[search]` section; required by search verbs and unused by exec.
+    pub(super) search: Option<SearchSection>,
+    /// The `[config]` section; required by search verbs and optional for exec.
+    pub(super) config: Option<ConfigSection>,
+    /// The `[exec]` section; required by `sima exec` and unused by search verbs.
+    pub(super) exec: Option<ExecSection>,
     /// The `[host.*]` entries, by name; absent means none declared.
     #[serde(default)]
     pub(super) host: BTreeMap<String, MachineSection>,
@@ -36,6 +40,26 @@ pub(super) struct FileConfig {
     /// search names is answered by this build.
     #[serde(default)]
     pub(super) domain: BTreeMap<String, DomainSection>,
+}
+
+/// The `[exec]` section: one opaque command and the files it exchanges with a
+/// rented machine.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct ExecSection {
+    /// The rented `[host.*]` entry used by the command.
+    pub(super) host: String,
+    /// One string interpreted by the remote shell at the payload root.
+    pub(super) command: String,
+    /// One file or directory resolved against the config file.
+    pub(super) payload: String,
+    /// The payload's install script, required for a directory payload.
+    pub(super) install: Option<String>,
+    /// Remote shell globs anchored at the payload root.
+    #[serde(default)]
+    pub(super) outputs: Vec<String>,
+    /// The local output directory, resolved against the config file.
+    pub(super) fetch_to: Option<String>,
 }
 
 /// One `[domain.*]` entry: the program that answers for the format the entry is
@@ -127,6 +151,10 @@ pub(super) struct MachineSection {
     /// TOML integers are i64; the load rejects values below 1.
     pub(super) count: Option<i64>,
     pub(super) image: Option<String>,
+    /// Environment assigned when a rented instance is created.
+    pub(super) env: Option<BTreeMap<String, String>>,
+    /// Whether exec may upload `sima-static` when the remote binary is absent.
+    pub(super) bootstrap_sima: Option<bool>,
     pub(super) runtime: Option<String>,
     pub(super) run_args: Option<Vec<String>>,
     pub(super) workers: Option<usize>,
@@ -162,6 +190,7 @@ pub(super) struct ConstraintsSection {
     pub(super) gpu_models: Vec<String>,
     pub(super) min_gpu_count: Option<u32>,
     pub(super) min_vram_mb: Option<u64>,
+    pub(super) min_cuda: Option<f64>,
     pub(super) max_price_usd_hour: Option<f64>,
     pub(super) min_reliability: Option<f64>,
     #[serde(default)]

@@ -81,6 +81,8 @@ pub enum Rental {
     Worker,
     /// The search's orchestrator itself, on a machine a migration moved it onto.
     Orchestrator,
+    /// One opaque command run on a deliberately retained machine.
+    Exec,
 }
 
 /// How far one acquisition attempt got. The instance id lives in the live
@@ -233,6 +235,19 @@ mod tests {
                 .is_file()
         );
         Ok(())
+    }
+
+    #[test]
+    fn every_rental_role_parses_from_its_stable_ledger_name() {
+        for (name, role) in [
+            ("worker", Rental::Worker),
+            ("orchestrator", Rental::Orchestrator),
+            ("exec", Rental::Exec),
+        ] {
+            let parsed: Rental =
+                serde_json::from_str(&format!("\"{name}\"")).expect("the ledger role parses");
+            assert_eq!(parsed, role);
+        }
     }
 
     #[test]

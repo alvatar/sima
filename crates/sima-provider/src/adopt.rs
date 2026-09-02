@@ -4,7 +4,7 @@
 //! the machine is routinely gone while the machine is still working and still
 //! being paid for. Re-invoking the migration must take that machine back rather
 //! than rent a second one, and the ledger is what makes it findable: a live
-//! record of role [`Rental::Orchestrator`] owned by this search names it.
+//! record of the requested role owned by this ledger owner names it.
 //!
 //! Adoption never rewrites the record. The rental's charged window opens at the
 //! record's `created_ms` and closes when its spend entry is written, so a
@@ -21,11 +21,11 @@ use crate::guard::InstanceGuard;
 use crate::offer::Price;
 use crate::provider::{InstanceId, InstanceStatus, Provider};
 
-/// Rebuilds a guard over the rental hosting this search's orchestrator, or `None`
-/// when there is none to take back.
+/// Rebuilds a guard over the rental in `role`, or `None` when there is none to
+/// take back.
 ///
-/// The ledger is searched for a live record of role [`Rental::Orchestrator`]
-/// owned by `lock`'s search and belonging to `provider`. What happens then follows
+/// The ledger is searched for a live record in `role`, owned by `lock`'s owner
+/// and belonging to `provider`. What happens then follows
 /// the provider's answer:
 ///
 /// - **Ready** — the guard is rebuilt from the record's tag, machine, and rate
@@ -44,13 +44,14 @@ pub fn adopt<'a, P: Provider + ?Sized>(
     provider: &'a P,
     store: &'a Store,
     lock: &SearchLock,
+    role: Rental,
     limits: &AcquireLimits,
 ) -> Result<Option<InstanceGuard<'a, P>>> {
     let owner = lock.search().to_string();
     let Some(record) = store.instance_records()?.into_iter().find(|record| {
         record.provider == provider.id()
             && record.owner == owner
-            && record.role == Rental::Orchestrator
+            && record.role == role
             && record.instance().is_some()
     }) else {
         return Ok(None);
@@ -158,7 +159,8 @@ mod tests {
         );
         store.put_instance(&record)?;
 
-        let guard = adopt(&stub, &store, &lock, &limits())?.expect("the rental is adopted");
+        let guard = adopt(&stub, &store, &lock, Rental::Orchestrator, &limits())?
+            .expect("the rental is adopted");
         assert_eq!(guard.id(), &id);
         assert_eq!(guard.tag(), "sima-tag-0");
         // The record is untouched: the charged window stays anchored where the
@@ -168,6 +170,32 @@ mod tests {
         // its machine down exactly as the first one would have.
         guard.release()?;
         assert_eq!(stub.destroyed().len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn adoption_matches_the_requested_role() -> Result<()> {
+        let (_dir, store) = temp_store();
+        let search = sample_search(3);
+        let lock = store.acquire_search_lock(&search)?;
+        let stub = StubProvider::new(vec![stub_offer("a", 100_000), stub_offer("b", 200_000)]);
+        let orchestrator = provisioned(&stub, 0, "sima-orchestrator-0");
+        let exec = provisioned(&stub, 1, "sima-exec-0");
+        for (tag, id, role) in [
+            ("sima-orchestrator-0", &orchestrator, Rental::Orchestrator),
+            ("sima-exec-0", &exec, Rental::Exec),
+        ] {
+            store.put_instance(&instance_record_as(tag, live_state(&id.0), search, role))?;
+        }
+
+        let guard = adopt(&stub, &store, &lock, Rental::Exec, &limits())?
+            .expect("the exec rental is adopted");
+        assert_eq!(guard.id(), &exec);
+        guard.keep();
+        let guard = adopt(&stub, &store, &lock, Rental::Orchestrator, &limits())?
+            .expect("the orchestrator rental is adopted");
+        assert_eq!(guard.id(), &orchestrator);
+        guard.keep();
         Ok(())
     }
 
@@ -186,7 +214,7 @@ mod tests {
         ))?;
         stub.destroy(&id)?;
 
-        assert!(adopt(&stub, &store, &lock, &limits())?.is_none());
+        assert!(adopt(&stub, &store, &lock, Rental::Orchestrator, &limits())?.is_none());
         assert!(
             store.instance_records()?.is_empty(),
             "the record is all that was left of it"
@@ -212,7 +240,7 @@ mod tests {
         // A guard has no Debug — it owns a machine, and rendering one is not
         // something any path needs — so the outcome is matched rather than
         // printed.
-        match adopt(&stub, &store, &lock, &limits()) {
+        match adopt(&stub, &store, &lock, Rental::Orchestrator, &limits()) {
             Err(Error::Provider(message)) => {
                 assert!(message.contains("sima-tag-0"), "names the tag: {message}");
                 assert!(message.contains(&id.0), "names the instance: {message}");
@@ -249,7 +277,7 @@ mod tests {
             Rental::Orchestrator,
         ))?;
 
-        assert!(adopt(&stub, &store, &lock, &limits())?.is_none());
+        assert!(adopt(&stub, &store, &lock, Rental::Orchestrator, &limits())?.is_none());
         assert_eq!(
             store.instance_records()?.len(),
             2,
@@ -272,7 +300,7 @@ mod tests {
             search,
             Rental::Orchestrator,
         ))?;
-        assert!(adopt(&stub, &store, &lock, &limits())?.is_none());
+        assert!(adopt(&stub, &store, &lock, Rental::Orchestrator, &limits())?.is_none());
         Ok(())
     }
 }
