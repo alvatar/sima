@@ -71,6 +71,7 @@ pub(crate) fn bootstrap_image(host: Option<&str>, container: &Container) -> Resu
     bootstrap_image_with_argv(host, container, &argv)
 }
 
+/// Runs an image-presence probe using the supplied command arguments.
 fn bootstrap_image_with_argv(
     host: Option<&str>,
     container: &Container,
@@ -114,6 +115,7 @@ fn bootstrap_image_with_argv(
     )))
 }
 
+/// Reports an unreachable SSH endpoint using its last diagnostic line.
 fn unreachable(label: &str, status: ExitStatus, said: &str) -> Error {
     let last = said
         .lines()
