@@ -635,10 +635,7 @@ landed, so a machine that may carry the tag must remain discoverable, and
 reconciliation resolves it. A machine that goes gone while coming up is a bad
 offer: it is destroyed, charged an incident, and the walk continues.
 Readiness is the provider's own answer, carrying the SSH endpoint; whether
-sshd is listening is the bootstrap layer's question. A null show answer from
-vast is ambiguous between a new row still materializing and a destroyed
-instance; the account listing settles it as `Provisioning` when it carries the
-id and `Gone` when it does not.
+sshd is listening is the bootstrap layer's question.
 
 **The ready budget belongs to the walk, and spending it ends the walk.** Every
 candidate polls against the one deadline `AcquireLimits` carries, so getting a
