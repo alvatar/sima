@@ -2808,9 +2808,9 @@ bill until a later attach, `--end`, or reconciliation assesses or closes it.
 
 A specialized image may set `bootstrap_sima = true`. Provisioning probes the
 configured remote binary and, when absent, uploads the `sima-static` artifact
-beside the local executable before content-addressed delivery. Rented host
-`env` entries flow to provider instance creation, and `min_cuda` participates
-in offer qualification.
+produced by `scripts/build-sima-static.sh` beside the local executable before
+content-addressed delivery. Rented host `env` entries flow to provider instance
+creation, and `min_cuda` participates in offer qualification.
 
 ### Migration
 

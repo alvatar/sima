@@ -51,6 +51,11 @@ Rebuild whenever the image's contents change — a commit touching `crates/`,
 `Cargo.lock`, or the `Containerfile` — since a rented machine runs the published
 copy and nothing delivers a local build to it.
 
+Exec hosts using `bootstrap_sima = true` also require the artifact produced by
+`scripts/build-sima-static.sh`; the script places it at
+`target/release/sima-static` and follows the same `crates/` and `Cargo.lock`
+rebuild rule.
+
 Pushing to `ghcr.io` costs nothing. What a private repository pays for is
 Actions compute, which is why the workflow below is a convenience over this
 path rather than the only way to publish.
