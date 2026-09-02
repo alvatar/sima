@@ -1535,6 +1535,53 @@ mod tests {
     }
 
     #[test]
+    fn a_raised_interrupt_is_read_before_an_exhausted_ceiling_is_assessed() -> Result<()> {
+        // Every tick of the follow reads the operator's flag before it assesses
+        // money, the first tick included: letting go asks nothing of the far
+        // side, while a wind-down ends a search the operator meant to leave
+        // computing. A flag raised as the far search starts therefore detaches
+        // under a ceiling already spent.
+        let local = local(RENTED, PROMPT, Some(3));
+        let search = local.config.search.id();
+        let lock = local.store.acquire_search_lock(&search)?;
+        let provider = marketplace();
+        let guard = hosting(&provider, &local.store, &lock)?;
+        over_budget(&local)?;
+        let interrupt = Arc::new(AtomicBool::new(false));
+        let far = Scripted::new()
+            .letting_go_at(Step::Start, &interrupt)
+            .delivering(vec![vec![started(&search), committed("aa")]]);
+
+        let (outcome, records) = session_over(&local, &far, Some(guard), &interrupt);
+        assert_eq!(
+            outcome?,
+            MigrateOutcome::Detached {
+                search,
+                machine: "cloudbox".to_string(),
+            },
+            "the flag decides the first tick"
+        );
+        assert_eq!(
+            far.steps().last(),
+            Some(&Step::Follow),
+            "the far search is left computing: {:?}",
+            far.steps()
+        );
+        assert!(
+            records.iter().all(|record| !matches!(
+                record.event,
+                Event::BudgetSpendExhausted { .. } | Event::BudgetWallClockExhausted { .. }
+            )),
+            "the ceiling was never assessed: {records:?}"
+        );
+        assert!(
+            provider.destroyed().is_empty(),
+            "the machine it computes on is kept"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn a_stream_that_dies_with_nothing_raised_fails_the_migration() -> Result<()> {
         // What the detach must not swallow: a transport that ends while the
         // operator is still watching is a fault, and it is reported as one
