@@ -104,13 +104,22 @@ pub(crate) fn show(client: &VastClient, id: &str, operation: &str) -> Result<Sho
     })
 }
 
-/// The state the API reports for `id`. A pending row is an instance still
-/// coming up: only the 404 of an instance the account does not hold reads
-/// as gone, and readiness polling bounds how long pending may last.
+/// The state the API reports for `id`.
+///
+/// A null row has two meanings: the row may still be materializing after
+/// creation, or the instance may have been destroyed. The account listing
+/// distinguishes them because it carries the id while the rental exists.
 pub(crate) fn status(client: &VastClient, id: &InstanceId) -> Result<InstanceStatus> {
     match show(client, &id.0, SHOW_OPERATION)? {
         ShowAnswer::Row(row) => Ok(row.state()),
-        ShowAnswer::Pending => Ok(InstanceStatus::Provisioning),
+        ShowAnswer::Pending => {
+            let account_holds = held(client)?.iter().any(|instance| instance.id == *id);
+            Ok(if account_holds {
+                InstanceStatus::Provisioning
+            } else {
+                InstanceStatus::Gone
+            })
+        }
         ShowAnswer::Absent => Ok(InstanceStatus::Gone),
     }
 }
