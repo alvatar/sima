@@ -1,15 +1,16 @@
 //! The marketplace search and the normalization of what it answers.
 //!
-//! The query narrows to what defines this backend's scope — rentable
-//! machines rented on demand — and nothing else: hard constraints and
-//! ranking belong to [`select`](sima_provider::select), so every offer the
-//! marketplace lists reaches the caller normalized.
+//! The query combines this backend's market scope with compatible hard
+//! constraints to reduce the response. [`select`](sima_provider::select)
+//! applies the complete constraints and ranking locally, so the marketplace
+//! remains a narrowing step rather than the authority on qualification.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
 use sima_core::{Error, Result};
-use sima_provider::{Offer, OfferId};
+use sima_provider::{Constraints, Offer, OfferId, Price};
 
-use crate::client::VastClient;
+use crate::client::{LIST_TIMEOUT, VastClient};
 use crate::price;
 
 /// The search endpoint.
@@ -69,11 +70,68 @@ struct OfferRow {
     geolocation: Option<String>,
 }
 
+/// The marketplace query narrowed by the compatible parts of `narrowing`.
+fn query(narrowing: &Constraints) -> Value {
+    let mut query = Map::from_iter([
+        ("rentable".to_string(), serde_json::json!({"eq": true})),
+        ("type".to_string(), Value::String("ondemand".to_string())),
+        (
+            "order".to_string(),
+            serde_json::json!([["dph_total", "asc"]]),
+        ),
+        ("limit".to_string(), Value::from(SEARCH_LIMIT)),
+    ]);
+    insert_bound(&mut query, "num_gpus", "gte", narrowing.min_gpu_count);
+    insert_bound(&mut query, "gpu_ram", "gte", narrowing.min_vram_mb);
+    insert_bound(&mut query, "cuda_max_good", "gte", narrowing.min_cuda);
+    if let Some(price) = narrowing.max_price {
+        insert_bound(
+            &mut query,
+            "dph_total",
+            "lte",
+            Some(dollars_rounded_up_to_cent(price)),
+        );
+    }
+    insert_bound(&mut query, "reliability2", "gte", narrowing.min_reliability);
+    if narrowing.verified_only {
+        insert_bound(&mut query, "verified", "eq", Some(true));
+    }
+    insert_bound(&mut query, "disk_space", "gte", narrowing.min_disk_gb);
+    insert_bound(&mut query, "inet_down", "gte", narrowing.min_bandwidth_mbps);
+    Value::Object(query)
+}
+
+/// Inserts a marketplace comparison when the local constraint has a value.
+fn insert_bound<T: Serialize>(
+    query: &mut Map<String, Value>,
+    key: &str,
+    operator: &str,
+    value: Option<T>,
+) {
+    if let Some(value) = value {
+        query.insert(
+            key.to_string(),
+            Value::Object(Map::from_iter([(
+                operator.to_string(),
+                serde_json::json!(value),
+            )])),
+        );
+    }
+}
+
+/// Converts a micro-USD rate to dollars, rounding the server-side bound up
+/// to a cent so local selection remains authoritative.
+fn dollars_rounded_up_to_cent(Price(micro_usd): Price) -> f64 {
+    let cents = micro_usd.div_ceil(10_000);
+    cents as f64 / 100.0
+}
+
 /// The marketplace's current on-demand offers, normalized.
-pub(crate) fn search(client: &VastClient) -> Result<Vec<Offer>> {
-    let query =
-        serde_json::json!({"rentable": {"eq": true}, "type": "ondemand", "limit": SEARCH_LIMIT});
-    let body = client.post(SEARCH_PATH, &query, OPERATION)?.ok(OPERATION)?;
+pub(crate) fn search(client: &VastClient, narrowing: &Constraints) -> Result<Vec<Offer>> {
+    let query = query(narrowing);
+    let body = client
+        .post_with_timeout(SEARCH_PATH, &query, OPERATION, LIST_TIMEOUT)?
+        .ok(OPERATION)?;
     // An offer missing a field is a marketplace answer this backend cannot
     // interpret, so the whole listing fails naming the field rather than
     // silently dropping a machine that might have been the cheapest. A rate
@@ -106,11 +164,11 @@ fn normalize(row: OfferRow) -> Option<Offer> {
 
 #[cfg(test)]
 mod tests {
-    use super::search;
+    use super::{query, search};
     use crate::client::VastClient;
     use crate::test_server::{ScriptedAnswer, TestServer};
     use sima_core::{Error, Result};
-    use sima_provider::{OfferId, Price};
+    use sima_provider::{Constraints, OfferId, Price};
 
     /// A page carrying `offers` verbatim, as the search answers it.
     fn page(offers: &str) -> Vec<ScriptedAnswer> {
@@ -154,10 +212,97 @@ mod tests {
     }"#;
 
     #[test]
+    fn the_default_query_carries_only_the_market_scope_and_order() {
+        assert_eq!(
+            query(&Constraints::default()),
+            serde_json::json!({
+                "rentable": {"eq": true},
+                "type": "ondemand",
+                "order": [["dph_total", "asc"]],
+                "limit": 4096,
+            })
+        );
+    }
+
+    #[test]
+    fn the_query_maps_every_compatible_constraint() {
+        let constraints = Constraints {
+            min_gpu_count: Some(2),
+            min_vram_mb: Some(24_576),
+            min_cuda: Some(12.2),
+            max_price: Some(Price(450_000)),
+            min_reliability: Some(0.98),
+            verified_only: true,
+            min_disk_gb: Some(80),
+            min_bandwidth_mbps: Some(200),
+            ..Constraints::default()
+        };
+        assert_eq!(
+            query(&constraints),
+            serde_json::json!({
+                "rentable": {"eq": true},
+                "type": "ondemand",
+                "order": [["dph_total", "asc"]],
+                "limit": 4096,
+                "num_gpus": {"gte": 2},
+                "gpu_ram": {"gte": 24_576},
+                "cuda_max_good": {"gte": 12.2},
+                "dph_total": {"lte": 0.45},
+                "reliability2": {"gte": 0.98},
+                "verified": {"eq": true},
+                "disk_space": {"gte": 80},
+                "inet_down": {"gte": 200},
+            })
+        );
+    }
+
+    #[test]
+    fn the_price_bound_rounds_up_to_the_next_cent() {
+        let constraints = Constraints {
+            max_price: Some(Price(450_001)),
+            ..Constraints::default()
+        };
+        assert_eq!(query(&constraints)["dph_total"]["lte"], 0.46);
+    }
+
+    #[test]
+    fn provider_incompatible_constraints_stay_local() {
+        let constraints = Constraints {
+            gpu_models: vec!["RTX 4090".to_string()],
+            excluded_machines: vec!["machine-7".to_string()],
+            ..Constraints::default()
+        };
+        assert_eq!(query(&constraints), query(&Constraints::default()));
+    }
+
+    #[test]
+    fn false_verified_only_emits_no_verification_filter() {
+        let constraints = Constraints {
+            verified_only: false,
+            ..Constraints::default()
+        };
+        assert!(query(&constraints).get("verified").is_none());
+    }
+
+    #[test]
+    fn the_search_sends_the_narrowing_query_verbatim() -> Result<()> {
+        let constraints = Constraints {
+            min_gpu_count: Some(2),
+            max_price: Some(Price(450_001)),
+            ..Constraints::default()
+        };
+        let server = TestServer::new(page(""));
+        let client = VastClient::new(&server.url(), "k-secret");
+        search(&client, &constraints)?;
+        assert_eq!(server.requests()[0].json(), query(&constraints));
+        Ok(())
+    }
+
+    #[test]
     fn the_search_asks_for_rentable_on_demand_machines() -> Result<()> {
         let server = TestServer::new(page(""));
         let client = VastClient::new(&server.url(), "k-secret");
-        search(&client)?;
+        search(&client, &Constraints::default())?;
         let request = &server.requests()[0];
         assert_eq!(request.method, "POST");
         assert_eq!(request.path, "/api/v0/bundles/");
@@ -172,7 +317,7 @@ mod tests {
     fn a_listed_offer_normalizes_field_by_field() -> Result<()> {
         let server = TestServer::new(page(NOMINAL));
         let client = VastClient::new(&server.url(), "k-secret");
-        let offers = search(&client)?;
+        let offers = search(&client, &Constraints::default())?;
         assert_eq!(offers.len(), 1);
         let offer = &offers[0];
         assert_eq!(offer.id, OfferId("8123456".to_string()));
@@ -198,7 +343,7 @@ mod tests {
     fn an_unvetted_host_without_a_region_normalizes_to_an_empty_location() -> Result<()> {
         let server = TestServer::new(page(UNVETTED));
         let client = VastClient::new(&server.url(), "k-secret");
-        let offers = search(&client)?;
+        let offers = search(&client, &Constraints::default())?;
         assert!(!offers[0].verified);
         assert_eq!(offers[0].cuda, 0.0);
         assert_eq!(offers[0].location, "");
@@ -209,7 +354,7 @@ mod tests {
     fn a_fractional_hourly_rate_rounds_to_the_nearest_micro_usd() -> Result<()> {
         let server = TestServer::new(page(UNVETTED));
         let client = VastClient::new(&server.url(), "k-secret");
-        let offers = search(&client)?;
+        let offers = search(&client, &Constraints::default())?;
         // $0.1234565/hr is 123_456.5 micro-USD, which rounds up.
         assert_eq!(offers[0].price, Price(123_457));
         Ok(())
@@ -219,7 +364,7 @@ mod tests {
     fn every_listed_offer_reaches_the_caller() -> Result<()> {
         let server = TestServer::new(page(&format!("{NOMINAL},{UNVETTED}")));
         let client = VastClient::new(&server.url(), "k-secret");
-        assert_eq!(search(&client)?.len(), 2);
+        assert_eq!(search(&client, &Constraints::default())?.len(), 2);
         Ok(())
     }
 
@@ -230,7 +375,7 @@ mod tests {
         let anomalous = NOMINAL.replace(r#""dph_total": 0.412"#, r#""dph_total": -0.5"#);
         let server = TestServer::new(page(&format!("{anomalous},{UNVETTED}")));
         let client = VastClient::new(&server.url(), "k-secret");
-        let offers = search(&client)?;
+        let offers = search(&client, &Constraints::default())?;
         assert_eq!(offers.len(), 1);
         assert_eq!(offers[0].id, OfferId("9000001".to_string()));
         Ok(())
@@ -257,7 +402,7 @@ mod tests {
         let server = TestServer::new(page(malformed));
         let client = VastClient::new(&server.url(), "k-secret");
         assert!(matches!(
-            search(&client),
+            search(&client, &Constraints::default()),
             Err(Error::Provider(message))
                 if message.starts_with("list offers: ") && message.contains("machine_id")
         ));
@@ -280,7 +425,7 @@ mod tests {
         let server = TestServer::new(page(malformed));
         let client = VastClient::new(&server.url(), "k-secret");
         assert!(matches!(
-            search(&client),
+            search(&client, &Constraints::default()),
             Err(Error::Provider(message))
                 if message.starts_with("list offers: ") && message.contains("gpu_name")
         ));
@@ -294,7 +439,7 @@ mod tests {
         }]);
         let client = VastClient::new(&server.url(), "k-wrong");
         assert!(matches!(
-            search(&client),
+            search(&client, &Constraints::default()),
             Err(Error::Provider(message))
                 if message == "list offers: HTTP 401: invalid_api_key"
         ));

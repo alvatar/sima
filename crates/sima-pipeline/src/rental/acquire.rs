@@ -574,7 +574,7 @@ mod tests {
     use sima_contracts::DeviceClass;
     use sima_domains::devices::DeviceType;
     use sima_provider::stub::StubProvider;
-    use sima_provider::{Cost, InstanceStatus, OfferId, Provision, never_cancelled};
+    use sima_provider::{Constraints, Cost, InstanceStatus, OfferId, Provision, never_cancelled};
     use sima_store::SpendEntry;
 
     use super::*;
@@ -1495,7 +1495,7 @@ mod tests {
         let spec = spec();
         let provider = provider_for_rental(&rental(&spec, 3, FillPolicy::Strict))?;
         assert_eq!(provider.id(), "stub");
-        assert_eq!(provider.offers()?.len(), 3);
+        assert_eq!(provider.offers(&Constraints::default())?.len(), 3);
         Ok(())
     }
 
@@ -1506,7 +1506,11 @@ mod tests {
         // transport target.
         let spec = spec();
         let provider = provider_for_rental(&rental(&spec, 1, FillPolicy::Strict))?;
-        let offer = provider.offers()?.into_iter().next().expect("an offer");
+        let offer = provider
+            .offers(&Constraints::default())?
+            .into_iter()
+            .next()
+            .expect("an offer");
         let Provision::Provisioned(instance) = provider.provision(&offer.id, "tag-0")? else {
             panic!("the stub provisions an always-available offer");
         };

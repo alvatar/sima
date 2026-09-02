@@ -791,7 +791,7 @@ mod tests {
 
     use sima_core::Result;
     use sima_model::TaskKey;
-    use sima_provider::{InstanceStatus, Provision};
+    use sima_provider::{Constraints, InstanceStatus, Provision};
     use sima_scheduler::{Event, Record};
     use sima_store::{InstanceRecord, InstanceRecordState, Rental as RentalRole, SyncReport};
 
@@ -2150,7 +2150,11 @@ mod tests {
         let provider = marketplace();
         // The ledger as an earlier invocation left it: a live rental of this
         // search's orchestrator.
-        let offer = provider.offers()?.into_iter().next().expect("an offer");
+        let offer = provider
+            .offers(&Constraints::default())?
+            .into_iter()
+            .next()
+            .expect("an offer");
         let Provision::Provisioned(instance) = provider.provision(&offer.id, "sima-tag-0")? else {
             panic!("the stub provisions its offer");
         };

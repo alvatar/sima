@@ -175,7 +175,7 @@ pub fn acquire<'a, P: Provider + ?Sized>(
         constraints
             .excluded_machines
             .extend(excluded_machines(store, provider.id())?);
-        select(provider.offers()?, &constraints, objective)
+        select(provider.offers(&constraints)?, &constraints, objective)
     };
     if ranked.is_empty() {
         return Err(Error::Provider(format!(
@@ -584,8 +584,8 @@ mod tests {
             self.inner.id()
         }
 
-        fn offers(&self) -> Result<Vec<Offer>> {
-            self.counted(|| self.inner.offers())
+        fn offers(&self, narrowing: &Constraints) -> Result<Vec<Offer>> {
+            self.counted(|| self.inner.offers(narrowing))
         }
 
         fn provision(&self, offer: &OfferId, tag: &str) -> Result<Provision> {
@@ -1421,8 +1421,8 @@ mod tests {
             self.inner.id()
         }
 
-        fn offers(&self) -> Result<Vec<Offer>> {
-            self.inner.offers()
+        fn offers(&self, narrowing: &Constraints) -> Result<Vec<Offer>> {
+            self.inner.offers(narrowing)
         }
 
         fn provision(&self, offer: &OfferId, tag: &str) -> Result<Provision> {
