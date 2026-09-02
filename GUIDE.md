@@ -510,8 +510,6 @@ VAST_API_KEY=... sima exec ci.toml --one-shot      # run, fetch, destroy
   `target/release/sima-static`. Rebuild the artifact after any commit touching
   `crates/` or `Cargo.lock`. Without the flag on such an image, exec fails
   naming the key.
-- Bootstrap is verified on `nvidia/cuda:12.4.1-devel-ubuntu22.04`.
-  `nvidia/cuda:12.8.1-base-ubuntu24.04` rejects the account key.
 - After an instance is destroyed outside sima, `sima exec <config> --end`
   clears its record and exits 0. `sima reconcile <config> --hosted` reaps a
   detached exec rental.
@@ -560,7 +558,7 @@ script), `SIMA_PROGRAM_DIGEST` (workers, echoed at handshake), `PYTHONPATH`.
 | Member short, search stopped | `fill = "strict"`. | `fill = "best-effort"` or fix constraints. |
 | `the remote image has no sima binary; set bootstrap_sima = true` | Specialized image. | Set the key and run `scripts/build-sima-static.sh`. |
 | `bootstrap_sima expects .../sima-static` | Artifact absent. | Run `scripts/build-sima-static.sh`; it places `target/release/sima-static`. |
-| `cannot reach <host>: Permission denied (publickey)` | The image did not install the account key, or the account has no registered key. | Use a verified image; check the account's keys. |
+| `cannot reach <host>: Permission denied (publickey)` | The host did not install the account key at boot; seen on individual hosts, independent of the image. | Rerun. The machine carries a `ProbeFailed` incident and is excluded after two. |
 | `cannot reach <host>: Connection refused` at the deadline | sshd did not come up within the readiness bound. | Raise `ready_timeout_ms` or change the image. |
 | `an exec command is already running` | Plain invocation over a running command. | `--attach` or `--end`. |
 | Machine still billing after crash | No code ran at death. | `sima reconcile <config>`; add `--hosted` if no migration is live. |
