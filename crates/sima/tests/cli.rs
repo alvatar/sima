@@ -3,7 +3,7 @@
 
 mod common;
 
-use std::os::unix::process::CommandExt;
+use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::time::{Duration, Instant};
@@ -1325,13 +1325,13 @@ fn a_second_sigterm_uses_the_default_termination() {
     );
     // Give the first handler time to arm the conditional default while the
     // search is still winding down.
-    std::thread::sleep(Duration::from_millis(1));
+    std::thread::sleep(Duration::from_millis(500));
     assert_eq!(
         unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGTERM) },
         0
     );
     let output = common::wait_within(child, Duration::from_secs(30));
-    assert_ne!(output.status.code(), Some(130));
+    assert_eq!(output.status.signal(), Some(libc::SIGTERM));
 }
 
 #[test]
