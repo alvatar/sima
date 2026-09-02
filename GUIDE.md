@@ -494,6 +494,8 @@ VAST_API_KEY=... sima exec ci.toml --one-shot      # run, fetch, destroy
 - Exit code is the remote command's. `exec.log` lands beside the outputs.
 - A plain invocation while a command runs is refused; use `--attach` or
   `--end`.
+- Phase output includes `waiting for the machine to answer` when the first
+  contact is refused while the machine comes up.
 - Budget is assessed only while attached. A detached command bills until an
   attach, `--end`, or `sima reconcile --hosted`.
 - `bootstrap_sima = true` uploads sima onto an image that lacks it. The upload

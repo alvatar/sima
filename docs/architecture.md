@@ -2755,6 +2755,10 @@ the `Exec` rental role. The key stays stable when the command, payload, or
 constraints change, while the config's store scopes it to that job's durable
 state.
 
+The first contact with the machine is retried under the host entry's readiness
+bounds. Only this step retries. Every later operation runs against a machine
+that has already answered, so a later failure is returned without repetition.
+
 ```mermaid
 flowchart TD
     A["sima exec job.toml"] --> B{"live Exec rental<br/>for this owner?"}
