@@ -284,9 +284,22 @@ fn abandon_unreached(
         now_ms(),
     );
     let released = guard.release();
-    match (recorded, released) {
-        (Err(error), _) | (Ok(()), Err(error)) => error,
-        (Ok(()), Ok(())) => error,
+    match (recorded.err(), released.err()) {
+        (None, None) => error,
+        (recording, release) => {
+            let mut message = error.to_string();
+            if let Some(recording) = recording {
+                message.push_str(&format!(
+                    "; recording the machine incident also failed: {recording}"
+                ));
+            }
+            if let Some(release) = release {
+                message.push_str(&format!(
+                    "; releasing the machine also failed: {release}"
+                ));
+            }
+            Error::Provider(message)
+        }
     }
 }
 
