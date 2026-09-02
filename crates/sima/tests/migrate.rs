@@ -825,10 +825,16 @@ fn a_detached_search_on_a_rented_machine_carries_no_ceiling_and_keeps_computing(
     // there saves nothing and leaves the worst state of all: a machine still
     // billing and no longer computing. The ceiling stays home — the far config
     // states none — and the far search computes past it until a recall ends it.
+    //
+    // The ceiling this side states is sized so the attached follow can never
+    // reach it: its clock starts at the rental, the follow assesses it on its
+    // first tick, and the flag that detaches arrives from the collector thread
+    // some time after the far search's first record. A ceiling a slow placement
+    // could reach would wind the far search down before that flag lands.
     workers_built();
     let dir = tempfile::tempdir().expect("temp dir");
     let far_root = dir.path().join("far");
-    let migrated = migrating_under_ceiling(dir.path(), &far_root, 1_000);
+    let migrated = migrating_under_ceiling(dir.path(), &far_root, 60_000);
 
     let interrupt = AtomicBool::new(false);
     let loaded = sima_pipeline::load(&migrated)?;
@@ -855,7 +861,8 @@ fn a_detached_search_on_a_rented_machine_carries_no_ceiling_and_keeps_computing(
         "the ceiling stayed home: {far_text}"
     );
 
-    // Three times the ceiling this side states, and the far search is still going.
+    // Well past the detach, and the far search is still going: nothing on the
+    // far side enforces a ceiling it was never given.
     assert!(
         poll_for(Duration::from_secs(3), || far_pid(&migrated, &far_root)
             .is_none()
