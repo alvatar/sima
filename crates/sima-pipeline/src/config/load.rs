@@ -237,6 +237,11 @@ pub fn load_exec(path: &Path) -> Result<ExecConfig> {
     })
 }
 
+/// Resolves the store used by the config at `path`.
+pub fn load_store(path: &Path) -> Result<PathBuf> {
+    Ok(load(path)?.store)
+}
+
 /// Requires one verb-specific top-level section with a direct message instead
 /// of exposing serde's structural representation.
 fn required_section<T>(path: &Path, name: &str, section: Option<T>) -> Result<T> {
@@ -2877,6 +2882,32 @@ mod tests {
             .to_string();
         assert!(message.contains("[search]"), "{message}");
         Ok(())
+    }
+
+    #[test]
+    fn store_load_accepts_each_command_config_and_its_shared_override() -> Result<()> {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let exec = exec_config(dir.path(), "");
+        assert_eq!(load_store(&exec)?, dir.path().join(".sima/store"));
+
+        let text = fs::read_to_string(&exec).expect("read exec config");
+        fs::write(&exec, format!("{text}\n[config]\nstore = \"s\"\n"))
+            .expect("add the shared store setting");
+        assert_eq!(load_store(&exec)?, dir.path().join("s"));
+
+        let search = write_config(dir.path(), "search.toml", BASE);
+        assert_eq!(load_store(&search)?, load(&search)?.store);
+        Ok(())
+    }
+
+    #[test]
+    fn store_load_names_an_unparsable_file() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = write_config(dir.path(), "broken.toml", "not = [toml");
+        let message = load_store(&path)
+            .expect_err("invalid TOML must fail")
+            .to_string();
+        assert!(message.contains(&path.display().to_string()), "{message}");
     }
 
     #[test]
