@@ -1237,16 +1237,6 @@ mod tests {
         let store = Store::open(&config.store)?;
         let far = ChoreographyDouble::idle();
         let mut recording = Recording::default();
-        assert_eq!(
-            contact_within(
-                &far,
-                Instant::now() + Duration::from_secs(1),
-                Duration::ZERO,
-                &AtomicBool::new(false),
-                &mut recording,
-            )?,
-            Reached::Answered
-        );
         let outcome = start(
             &far,
             &store,
@@ -1263,15 +1253,7 @@ mod tests {
         assert_eq!(recording.command, ["remote line"]);
         assert_eq!(
             *far.calls.borrow(),
-            [
-                "contact",
-                "state",
-                "binary_present",
-                "deliver",
-                "start",
-                "follow",
-                "fetch",
-            ]
+            ["state", "binary_present", "deliver", "start", "follow", "fetch"]
         );
         Ok(())
     }
@@ -1287,16 +1269,6 @@ mod tests {
             ..ChoreographyDouble::idle()
         };
         let mut recording = Recording::default();
-        assert_eq!(
-            contact_within(
-                &far,
-                Instant::now() + Duration::from_secs(1),
-                Duration::ZERO,
-                &AtomicBool::new(false),
-                &mut recording,
-            )?,
-            Reached::Answered
-        );
         let error = start(
             &far,
             &store,
@@ -1308,7 +1280,7 @@ mod tests {
         )
         .expect_err("bootstrap is explicit");
         assert!(error.to_string().contains("bootstrap_sima"), "{error}");
-        assert_eq!(*far.calls.borrow(), ["contact", "state", "binary_present"]);
+        assert_eq!(*far.calls.borrow(), ["state", "binary_present"]);
         Ok(())
     }
 
