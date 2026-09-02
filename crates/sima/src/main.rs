@@ -1,7 +1,7 @@
 //! `sima` command-line binary. `search` drives a config to its outcome with
-//! live progress and graceful Ctrl-C; the query commands read the search's
-//! journal along two axes — what the command reports, and how much of the
-//! search it covers:
+//! live progress and graceful terminating signals; the query commands read the
+//! search's journal along two axes — what the command reports, and how much of
+//! the search it covers:
 //!
 //! - `status` reports execution: the search's state and counters, one task's
 //!   attempt timeline under `--task <key>`, or the tasks that did not commit
@@ -43,7 +43,7 @@
 //!
 //! - 0 — the search finalized, a query answered, or an exec detached;
 //! - 2 — a definitive candidate failure;
-//! - 130 — interrupted by Ctrl-C, store resumable;
+//! - 130 — interrupted by SIGINT, SIGTERM, or SIGHUP, store resumable;
 //! - 1 — everything else: infrastructure fault, config error, usage error, and
 //!   a `migrate` that came home with tasks outstanding.
 //!
@@ -80,8 +80,7 @@ use crate::render::Narration;
 
 /// Exit code for a definitive candidate failure.
 pub(crate) const EXIT_FAILED: u8 = 2;
-/// Exit code for a search wound down by an interrupt, matching the shell
-/// convention for death by SIGINT.
+/// Exit code for a search wound down by a terminating signal.
 pub(crate) const EXIT_INTERRUPTED: u8 = 130;
 /// Exit code for everything else that is not success: infrastructure
 /// fault, config error, usage error.
@@ -456,10 +455,10 @@ fn resolve_config(arg: &str) -> PathBuf {
 }
 
 /// `sima search <config.toml> [--fleet] [--accept-binary]`: loads, prints the search
-/// id, orchestrates with progress rendering and the SIGINT flag installed, and
-/// maps the outcome to the exit code. `engagement` is what the invocation asked
-/// for: this machine alone, or this machine and the fleet. `accept` is what it
-/// asked for about a program whose build changed under the search.
+/// id, orchestrates with progress rendering and the interrupt flag installed,
+/// and maps the outcome to the exit code. `engagement` is what the invocation
+/// asked for: this machine alone, or this machine and the fleet. `accept` is
+/// what it asked for about a program whose build changed under the search.
 fn search_command(
     config: &Path,
     engagement: Engagement,
@@ -1097,9 +1096,9 @@ pub(crate) fn state_exit_code(state: &SearchState) -> u8 {
 /// winds down on.
 ///
 /// Registered before any output, so a terminating signal is graceful from the
-/// first line on. A second signal of the same kind falls through to the default
-/// death, which is safe because that is exactly the crash the recovery
-/// guarantees cover.
+/// first line on. A later terminating signal falls through to the default death,
+/// which is safe because that is exactly the crash the recovery guarantees
+/// cover.
 pub(crate) fn register_interrupt() -> Result<Arc<AtomicBool>> {
     let interrupt = Arc::new(AtomicBool::new(false));
     for signal in [
@@ -1112,8 +1111,8 @@ pub(crate) fn register_interrupt() -> Result<Arc<AtomicBool>> {
     Ok(interrupt)
 }
 
-/// Makes the first `signal` set `interrupt` and a repeated one terminate by
-/// its default disposition.
+/// Makes `signal` set `interrupt` initially and use its default disposition once
+/// another terminating signal has set the shared flag.
 fn register_terminating_signal(signal: i32, interrupt: &Arc<AtomicBool>) -> Result<()> {
     // The conditional default must precede the flag handler: it observes the
     // first signal's flag when the same signal arrives again.
