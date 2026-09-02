@@ -517,6 +517,48 @@ VAST_API_KEY=... sima exec ci.toml --one-shot      # run, fetch, destroy
   `exec.pid`, `exec.status`. Untracked files such as build caches survive
   redelivery.
 
+### Exec: a GPU program shipped as a binary
+
+Verified end to end: a Vulkan ray tracer, prebuilt locally, rendering on a
+rented RTX card. Complete example in `examples/exec-gpu-binary/`.
+
+Rules, each one learned from a failed run:
+
+- **Binary glibc floor.** A binary built on a rolling distro needs a newer
+  glibc than the image has and fails to load. Build with
+  `cargo zigbuild --release -p <bin> --target x86_64-unknown-linux-gnu.2.35`
+  (needs `zig` and `cargo-zigbuild`). Check:
+  `objdump -T <bin> | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1` must be
+  at or below the image's glibc (Ubuntu 22.04: 2.35, 24.04: 2.39). A musl
+  build cannot dlopen a GPU driver.
+- **Graphics APIs on a CUDA image.** Set
+  `env = { NVIDIA_DRIVER_CAPABILITIES = "all" }` on the host entry. The
+  NVIDIA Vulkan ICD dlopens `libEGL.so.1` and `libXext.so.6` at init and
+  reports "no Vulkan driver" without them: install
+  `libvulkan1 libegl1 libgl1 libxext6 libx11-6`.
+- **Ray tracing needs RTX.** GTX cards expose Vulkan without ray tracing.
+  `gpu_models` matches case-insensitive substrings: `["RTX"]` is any RTX
+  card.
+- **Image.** `nvidia/cuda:<ver>-base-ubuntu24.04` unless CUDA compilation is
+  needed on the machine. Ubuntu 22.04 lacks `glslc`; 24.04 has it. The
+  `-base` variant pulls fastest.
+- **Install script is POSIX `sh`.** `set -euo pipefail` fails. Use `set -eu`.
+  Everything the command needs is installed there, once per payload digest.
+  End the script with a gate that opens the GPU (a tiny render), so a broken
+  environment fails at install, naming the environment.
+- **Iterate on a kept machine.** Plain `sima exec` rents and keeps; each edit
+  to `command` reruns in seconds by adoption; a changed install script reruns
+  the install. `--end` when done. `--one-shot` only for a settled command.
+- **Overhead.** About 4 minutes per fresh rental: listing, pull, ssh
+  readiness, bootstrap, apt. A kept machine or a batched command amortizes
+  it.
+- **Key rejection.** `cannot reach <host>: Permission denied (publickey)`
+  after the wait: that host never installed the account key. Rerun; it is
+  excluded after two incidents.
+- **Non-zero command exit under `--one-shot` keeps the machine.** Run
+  `--end`. Non-UTF-8 command output breaks the log stream; filter with
+  `tr -cd '\11\12\15\40-\176'`.
+
 ## Filesystem
 
 Beside the config, one directory:
