@@ -828,9 +828,30 @@ impl FarExec for RemoteExec {
         let stdout = child.stdout.take().expect("piped stdout");
         let (send, receive) = mpsc::channel();
         let reader = std::thread::spawn(move || {
-            for line in BufReader::new(stdout).lines() {
-                if send.send(line).is_err() {
-                    break;
+            let mut reader = BufReader::new(stdout);
+            let mut bytes = Vec::new();
+            loop {
+                bytes.clear();
+                // Keep transport bytes intact until a whole line is available;
+                // invalid UTF-8 then becomes replacement characters in output.
+                match reader.read_until(b'\n', &mut bytes) {
+                    Ok(0) => break,
+                    Ok(_) => {
+                        if bytes.last() == Some(&b'\n') {
+                            bytes.pop();
+                        }
+                        if bytes.last() == Some(&b'\r') {
+                            bytes.pop();
+                        }
+                        let line = String::from_utf8_lossy(&bytes).into_owned();
+                        if send.send(Ok(line)).is_err() {
+                            break;
+                        }
+                    }
+                    Err(error) => {
+                        let _ = send.send(Err(error));
+                        break;
+                    }
                 }
             }
         });
@@ -1510,6 +1531,52 @@ mod tests {
         assert!(dir.path().join("exec-outputs/exec.log").is_file());
         let store = Store::open(dir.path().join(".sima/store"))?;
         assert_eq!(store.instance_records()?.len(), 1, "kept rental ledger");
+        Ok(())
+    }
+
+    #[test]
+    fn exec_streams_non_utf8_output_lossily_and_fetches_outputs() -> Result<()> {
+        let dir = tempfile::tempdir().expect("job");
+        let config = job_config(
+            dir.path(),
+            "mkdir -p reports; printf fetched > reports/out.txt; printf 'ok\\n\\377\\376 bad\\nend\\n'",
+        );
+        let mut recording = Recording::default();
+        let outcome = exec(
+            &config,
+            &ExecOptions {
+                action: ExecAction::Start { one_shot: false },
+                fetch_to: None,
+            },
+            &AtomicBool::new(false),
+            &mut recording,
+        )?;
+        assert_eq!(outcome, ExecOutcome::Completed(0));
+        assert_eq!(recording.command, ["ok", "�� bad", "end"]);
+        assert_eq!(
+            fs::read_to_string(dir.path().join("exec-outputs/reports/out.txt"))
+                .expect("fetched output"),
+            "fetched"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn exec_stream_strips_carriage_return_before_newline() -> Result<()> {
+        let dir = tempfile::tempdir().expect("job");
+        let config = job_config(dir.path(), "printf 'line\\r\\n'");
+        let mut recording = Recording::default();
+        let outcome = exec(
+            &config,
+            &ExecOptions {
+                action: ExecAction::Start { one_shot: false },
+                fetch_to: None,
+            },
+            &AtomicBool::new(false),
+            &mut recording,
+        )?;
+        assert_eq!(outcome, ExecOutcome::Completed(0));
+        assert_eq!(recording.command, ["line"]);
         Ok(())
     }
 
