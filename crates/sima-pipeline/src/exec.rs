@@ -303,9 +303,7 @@ fn abandon_unreached(
                 ));
             }
             if let Some(release) = release {
-                message.push_str(&format!(
-                    "; releasing the machine also failed: {release}"
-                ));
+                message.push_str(&format!("; releasing the machine also failed: {release}"));
             }
             Error::Provider(message)
         }
@@ -1262,7 +1260,14 @@ mod tests {
         assert_eq!(recording.command, ["remote line"]);
         assert_eq!(
             *far.calls.borrow(),
-            ["state", "binary_present", "deliver", "start", "follow", "fetch"]
+            [
+                "state",
+                "binary_present",
+                "deliver",
+                "start",
+                "follow",
+                "fetch"
+            ]
         );
         Ok(())
     }
