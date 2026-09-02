@@ -29,6 +29,35 @@ fn stdout(output: &Output) -> String {
     String::from_utf8(output.stdout.clone()).expect("stdout is UTF-8")
 }
 
+/// Writes the minimal exec config accepted by the loader.
+fn write_exec_config(dir: &Path) -> PathBuf {
+    std::fs::write(dir.join("payload.sh"), "#!/bin/sh\ntrue\n").expect("write exec payload");
+    common::write_config_text(
+        dir,
+        "exec.toml",
+        r#"
+        [exec]
+        host = "x"
+        command = "true"
+        payload = "payload.sh"
+
+        [host.x]
+        provider = "stub"
+        image = "stub"
+        "#,
+    )
+}
+
+/// Seeds the sampled fan-out directory above the loose-object warning bound.
+fn seed_loose_object_warning(store: &Path) {
+    Store::open(store).expect("open the store");
+    let fanout = store.join("objects/00");
+    std::fs::create_dir_all(&fanout).expect("create the sampled fan-out");
+    for i in 0..391u16 {
+        std::fs::write(fanout.join(format!("{i:062x}")), []).expect("seed a loose object");
+    }
+}
+
 #[test]
 fn exec_argv_forms_dispatch_and_malformed_forms_report_usage() {
     let dir = tempfile::tempdir().expect("temp dir");
@@ -1235,6 +1264,45 @@ fn sigint_interrupts_gracefully_and_running_again_matches_an_uninterrupted_store
     );
 }
 
+/// Asserts that `signal` winds a running search down and leaves resumable state.
+fn terminating_signal_interrupts_gracefully(signal: libc::c_int) {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let config = write_config(
+        dir.path(),
+        r#""sleep:800", "sleep:800", "sleep:800", "sleep:800""#,
+    );
+    let path = config.to_str().expect("utf-8 path");
+    let mut child = sima_command()
+        .args(["search", path])
+        .stdout(std::process::Stdio::null())
+        .spawn()
+        .expect("spawn sima search");
+    assert!(
+        common::wait_for_first_lease(&config, Duration::from_secs(30)),
+        "the search leased a task before the interrupt"
+    );
+    assert_eq!(unsafe { libc::kill(child.id() as libc::pid_t, signal) }, 0);
+    assert_eq!(
+        child.wait().expect("wait for sima").code(),
+        Some(130),
+        "graceful interrupt exits 130"
+    );
+    assert!(manifest_of(&config).is_none(), "no manifest yet");
+
+    let resumed = sima(&["search", path]);
+    assert_eq!(resumed.status.code(), Some(0), "{resumed:?}");
+}
+
+#[test]
+fn sigterm_interrupts_gracefully_and_leaves_a_resumable_store() {
+    terminating_signal_interrupts_gracefully(libc::SIGTERM);
+}
+
+#[test]
+fn sighup_interrupts_gracefully_and_leaves_a_resumable_store() {
+    terminating_signal_interrupts_gracefully(libc::SIGHUP);
+}
+
 #[test]
 fn a_terminal_interrupt_winds_the_search_down_without_killing_its_workers() {
     // A terminal delivers Ctrl-C to every process in the foreground group, so
@@ -1851,6 +1919,70 @@ fn reconcile_over_a_store_holding_no_rental_reports_nothing_to_do() {
         stdout(&output).contains("nothing to reconcile"),
         "{output:?}"
     );
+}
+
+#[test]
+fn reconcile_accepts_an_exec_config_with_an_empty_store() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let config = write_exec_config(dir.path());
+    let output = sima(&["reconcile", config.to_str().expect("utf-8 path")]);
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    assert!(
+        stdout(&output).contains("nothing to reconcile"),
+        "{output:?}"
+    );
+}
+
+#[test]
+fn reconcile_hosted_clears_an_exec_record_through_an_exec_config() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let config = write_exec_config(dir.path());
+    let store = Store::open(dir.path().join(".sima/store")).expect("open the store");
+    store
+        .put_instance(&InstanceRecord {
+            tag: "sima-exec-x".to_string(),
+            provider: "stub".to_string(),
+            machine: "m-0".to_string(),
+            owner: "00".repeat(32),
+            role: Rental::Exec,
+            state: InstanceRecordState::Live {
+                instance: "i-1".to_string(),
+            },
+            price_micro_usd_hour: 100_000,
+            created_ms: 1_700_000_000_000,
+        })
+        .expect("seed the exec rental");
+
+    let output = sima(&[
+        "reconcile",
+        config.to_str().expect("utf-8 path"),
+        "--hosted",
+    ]);
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    assert!(
+        store
+            .instance_records()
+            .expect("read the ledger")
+            .is_empty()
+    );
+}
+
+#[test]
+fn loose_object_warning_accepts_a_search_config() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let config = write_config(dir.path(), r#""succeed""#);
+    seed_loose_object_warning(&dir.path().join("store"));
+    let output = sima(&["status", config.to_str().expect("utf-8 path")]);
+    assert!(stderr(&output).contains("loose objects"), "{output:?}");
+}
+
+#[test]
+fn loose_object_warning_accepts_an_exec_config() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let config = write_exec_config(dir.path());
+    seed_loose_object_warning(&dir.path().join(".sima/store"));
+    let output = sima(&["exec", config.to_str().expect("utf-8 path"), "--end"]);
+    assert!(stderr(&output).contains("loose objects"), "{output:?}");
 }
 
 #[test]

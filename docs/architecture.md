@@ -660,10 +660,11 @@ success, on failure, and on interrupt. Three tiers cover the exits:
   an error returning through `?` and a panic unwinding, discarding the
   outcome because a destructor has nowhere to report it. Teardown also
   closes the rental's spend entry, so what the machine cost outlives it.
-- **Interrupt.** The first SIGINT is a graceful wind-down, so it unwinds
-  through the guard like any other exit. It reaches an acquisition still in
-  flight too, which is where the machines are paid for and no work has started:
-  the acquisition is [abandoned](#renting) and releases what it held.
+- **Interrupt.** The first SIGINT, SIGTERM, or SIGHUP is a graceful wind-down,
+  so it unwinds through the guard like any other exit. It reaches an
+  acquisition still in flight too, which is where the machines are paid for
+  and no work has started: the acquisition is [abandoned](#renting) and
+  releases what it held.
 - **Crash.** SIGKILL or power loss runs no code at all. What covers it is
   durable state: the ledger, plus reconciliation.
 
@@ -871,9 +872,11 @@ Three decisions shape it:
 - **An instance carrying no label is omitted from the listing.** A ledger
   record exists only for a tag this backend wrote, so an unlabeled instance
   corresponds to no record, and the tag is the only key reconciliation has.
-  For the same reason only the status a missing instance answers with reads
-  as `Gone`: any other failing answer is an error, since reading it as
-  absence would report a machine still running and billed as destroyed.
+  A 404 show answer reads as `Gone`. A null show answer reads as
+  `Provisioning` when the account listing carries the id and `Gone` when it
+  does not; the service uses null both while a new row materializes and after
+  an instance is destroyed. Any failing answer is an error, since reading it
+  as absence would report a machine still running and billed as destroyed.
 
 ## `sima-contracts` (L3)
 
@@ -2598,15 +2601,16 @@ fell short is named, since any number of them may have. The answers come back in
 member order however the machines came up, so which machine the journal calls
 `cheap[0]` is the entry's to decide and not the market's.
 
-**An interrupt during acquisition abandons it.** The flag SIGINT raises reaches
-every wait an acquisition spends — for a machine to report ready, and for the
-readiness probe that follows — so one Ctrl-C is answered while a boot is still
-running rather than after the entry's `ready_timeout`. What follows is the same
-wherever it lands: no further member is rented, every machine already acquired
-is released by its guard, and the search comes back interrupted, exits `130`, and
-is resumable with nothing executed. A machine interrupted mid-wait carries no
-incident — it was never given the time its entry allows, so it has said nothing
-about itself, and an incident would exclude it from this acquisition's retries
+**An interrupt during acquisition abandons it.** The flag SIGINT, SIGTERM, or
+SIGHUP raises reaches every wait an acquisition spends — for a machine to
+report ready, and for the readiness probe that follows — so one signal is
+answered while a boot is still running rather than after the entry's
+`ready_timeout`. What follows is the same wherever it lands: no further member
+is rented, every machine already acquired is released by its guard, and the
+search comes back interrupted, exits `130`, and is resumable with nothing
+executed. A machine interrupted mid-wait carries no incident — it was never
+given the time its entry allows, so it has said nothing about itself, and an
+incident would exclude it from this acquisition's retries
 and blacklist it at two across searches. A machine that fails on its own still
 carries one. One line states the abandonment, naming how many machines the
 acquisition had and that they are gone, and it is the whole account a search
@@ -2690,9 +2694,10 @@ scheduler, the driver, or the pool's slot list ever changing.
 **The supervisor** is one thread beside the scheduler, both in one scope so
 it borrows the store, lock, and guards. Each heartbeat it assesses the search's
 budget from the ledger once, then polls every rented machine's status. **Budget
-exhaustion behaves as an interrupt**: it sets the same flag SIGINT sets, so
-the search winds down gracefully, the guards tear the rentals down, and the store
-stays resumable. A machine polled `Gone` is **replaced**: its record is
+exhaustion behaves as an interrupt**: it sets the same flag the terminating
+signal handlers set, so the search winds down gracefully, the guards tear the
+rentals down, and the store stays resumable. A machine polled `Gone` is
+**replaced**: its record is
 closed out, a replacement is acquired under its own entry's constraints raised
 to the slots in use, and the transport's destination swaps to it. A replacement
 that cannot be made retires the transport — fatally under strict fill, a
@@ -2758,6 +2763,8 @@ state.
 The first contact with the machine is retried under the host entry's readiness
 bounds. Only this step retries. Every later operation runs against a machine
 that has already answered, so a later failure is returned without repetition.
+The error returned at the deadline carries ssh's last diagnostic line, so a
+rejected key and a refused connection read differently.
 
 ```mermaid
 flowchart TD
@@ -2772,7 +2779,7 @@ flowchart TD
     H --> I["start one detached shell command"]
     I --> G
     G --> J{"stream ending"}
-    J -- "Ctrl-C" --> K["detach; command and rental continue"]
+    J -- "SIGINT / SIGTERM / SIGHUP" --> K["detach; command and rental continue"]
     J -- "command exit" --> L["fetch output globs and exec.log"]
     J -- "budget exhausted" --> M["kill command"]
     M --> L
@@ -2809,6 +2816,10 @@ fetches its files, and releases the rental. A detached command continues to
 bill until a later attach, `--end`, or reconciliation assesses or closes it.
 `reconcile` spares `Exec` rentals in worker scope and reaps them with
 `--hosted`, matching hosted orchestrator rentals.
+
+An `--end` whose recorded instance is already gone clears the record and exits
+0. The same provider answer lets hosted reconciliation clear the record without
+waiting through the readiness bound.
 
 A specialized image may set `bootstrap_sima = true`. Provisioning probes the
 configured remote binary and, when absent, uploads the `sima-static` artifact
@@ -3025,9 +3036,10 @@ program.
 
 **The far search is detached.** It is started with `setsid` and its pid recorded,
 so once it is started, a laptop that sleeps, a network that drops, a
-`sima migrate` that is killed, and a Ctrl-C all leave the destination computing.
-An interrupt arriving before that point abandons the placement instead: nothing
-was started, so there is nothing to leave computing. Re-running reattaches, and
+`sima migrate` that is killed, and a SIGINT, SIGTERM, or SIGHUP all leave the
+destination computing. An interrupt arriving before that point abandons the
+placement instead: nothing was started, so there is nothing to leave computing.
+Re-running reattaches, and
 the two destination kinds reattach by different evidence: a rented machine is
 found in the instance ledger and adopted, which is what stops a second
 invocation renting a second machine; a machine of yours has no ledger record, so
@@ -3049,7 +3061,7 @@ A migrated search has three states, and an operator moves between them by name:
  ┌───────────┐ attach  ┌──────────────┐  pull+settle ┌──────────────┐
  │ detached  │────────▶│   attached   │─────────────▶│  wound down  │
  │ (passive) │◀────────│ sima migrate │              │ sima recall  │
- └───────────┘ Ctrl-C  └──────────────┘              └──────────────┘
+ └───────────┘ signal  └──────────────┘              └──────────────┘
       ▲        or any        │                             │
       │        death         │ its own ceiling             │ pull, settle,
       └──────────────────────┘ (winds down, exit 130)      ▼ teardown
@@ -3057,15 +3069,15 @@ A migrated search has three states, and an operator moves between them by name:
 ```
 
 **Every exit path from an attached migration lands in the same passive state.**
-Ctrl-C, `SIGHUP`, `SIGTERM`, a closed terminal, a crash: the far search keeps
-computing, the rental stays standing, and nothing is pulled. Only `SIGINT` is
-handled, and what it does is print where the search is and how to come back; the
-rest are unhandled, so the default death has the same effect. A migration
-interrupted this way exits 0, because detaching is what was asked for.
+SIGINT, SIGTERM, and SIGHUP are handled as a detach: the far search keeps
+computing, the rental stays standing, nothing is pulled, and the command prints
+where the search is and how to come back. A closed terminal or a crash reaches
+the same passive state through process death. A migration interrupted this way
+exits 0, because detaching is what was asked for.
 
 **An interrupt before the start abandons the placement.** Reaching a machine,
-writing a config on it, and sending it the search's store take minutes, and a
-`SIGINT` inside that window is read as it is during the acquisition: the
+writing a config on it, and sending it the search's store take minutes. SIGINT,
+SIGTERM, or SIGHUP inside that window is read as it is during acquisition: the
 migration stops where it is, no far search is started, a rental taken for the
 placement is released by the same teardown any placement failure runs through,
 and the search is left as it was. The verb exits 130 and states that nothing was
@@ -3130,9 +3142,10 @@ costs what a computing one costs and returns nothing.
 
 **A wall-clock ceiling is kept where no bill runs against the time.** `[budget]
 max_wall_clock_ms` is the search's own deadline, measured from the start of each
-execution, and it raises the same flag `SIGINT` raises — so what follows is the
-wind-down that already exists, and the journal carries a `Diagnostic` naming the
-ceiling. A value of `0` states no ceiling, exactly as omitting the key does.
+execution, and it raises the same flag the terminating signal handlers raise —
+so what follows is the wind-down that already exists, and the journal carries a
+`Diagnostic` naming the ceiling. A value of `0` states no ceiling, exactly as
+omitting the key does.
 
 The ceiling is worth something on a plain local search and on a machine of yours,
 so it is kept on both, and the far config a migration onto a machine of yours
@@ -3237,10 +3250,11 @@ the flag is split out of the arguments before the command match, so every
 command form keeps its shape whether or not a host is named:
 
 - **`sima search <config.toml>`** — drives the configured search, printing one
-  plain line per meaningful event from the observer boundary. SIGINT sets the
-  interrupt flag for a graceful wind-down; a second SIGINT falls through
-  to default death, which is exactly the crash the recovery guarantees
-  cover. One SIGINT suffices while a fleet is still being acquired: it
+  plain line per meaningful event from the observer boundary. SIGINT, SIGTERM,
+  and SIGHUP set the interrupt flag for a graceful wind-down; a later
+  terminating signal falls through to default death, which is exactly the crash
+  the recovery guarantees cover. One signal suffices while a fleet is still
+  being acquired: it
   [abandons the acquisition](#renting), releases the machines it had, and exits
   `130`. A search over a store that already holds progress opens with the ledger
   it resumes — `resuming: 4/6 committed, 2 outstanding` — rather than a task
@@ -3272,10 +3286,11 @@ command form keeps its shape whether or not a host is named:
   `search` uses, and brings the results home; see
   [Migration](#migration). It takes no destination argument, since where a search
   executes belongs in the file that describes it, and no `--on`, since it drives
-  a search rather than observing one. SIGINT once the far search is started detaches:
-  the far search keeps computing, the line it prints names the machine and both
-  ways back, and it exits 0. SIGINT before that abandons the placement: nothing
-  is started, a rental taken for it is released, and it exits 130.
+  a search rather than observing one. SIGINT, SIGTERM, or SIGHUP once the far
+  search is started detaches: the far search keeps computing, the line it prints
+  names the machine and both ways back, and it exits 0. The same signals before
+  that abandon the placement: nothing is started, a rental taken for it is
+  released, and it exits 130.
 - **`sima recall <config.toml>`** — the inverse: winds the far search down, reads
   what it ended as, pulls what it committed, settles the search, and destroys any
   rental. A far search that failed definitively is reported by task and reason and
@@ -3287,7 +3302,8 @@ command form keeps its shape whether or not a host is named:
   — so Ctrl-C during one takes the default death and a second recall carries on.
 - **`sima reconcile <config.toml>`** — destroys the machines the config's
   store still holds instance records for, and prints how many machines it
-  destroyed and how many records it cleared. `--hosted` includes the machines
+  destroyed and how many records it cleared. Any config form locates the
+  store. `--hosted` includes the machines
   hosting a migrated search's orchestrator, which a pass spares by default because
   a detached migration is indistinguishable from an abandoned rental by the lock
   alone. The instance ledger decides

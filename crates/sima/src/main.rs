@@ -1,7 +1,7 @@
 //! `sima` command-line binary. `search` drives a config to its outcome with
-//! live progress and graceful Ctrl-C; the query commands read the search's
-//! journal along two axes — what the command reports, and how much of the
-//! search it covers:
+//! live progress and graceful terminating signals; the query commands read the
+//! search's journal along two axes — what the command reports, and how much of
+//! the search it covers:
 //!
 //! - `status` reports execution: the search's state and counters, one task's
 //!   attempt timeline under `--task <key>`, or the tasks that did not commit
@@ -43,7 +43,7 @@
 //!
 //! - 0 — the search finalized, a query answered, or an exec detached;
 //! - 2 — a definitive candidate failure;
-//! - 130 — interrupted by Ctrl-C, store resumable;
+//! - 130 — interrupted by SIGINT, SIGTERM, or SIGHUP, store resumable;
 //! - 1 — everything else: infrastructure fault, config error, usage error, and
 //!   a `migrate` that came home with tasks outstanding.
 //!
@@ -69,7 +69,7 @@ use sima_pipeline::{
     BinaryChange, Engagement, ExecAction, ExecObserver, ExecOptions, ExecOutcome, FeedInfo,
     LoadedConfig, LocalFeed, Record, RemoteFeed, RemovalReport, ReportRow, Sdk, SearchControl,
     SearchFeed, SearchId, SearchOutcome, SearchState, SearchStatus, SearchTimeline, TaskHistory,
-    exec, exec_instance_line, failures_records, follow_serve, load, load_exec, local_snapshot,
+    exec, exec_instance_line, failures_records, follow_serve, load, load_store, local_snapshot,
     orchestrate, receive_exec_payload, receive_program, remote_snapshot, report_records,
     report_task_records, seeded_status, status_records, sync_serve, task_history_records,
     timeline_records,
@@ -80,8 +80,7 @@ use crate::render::Narration;
 
 /// Exit code for a definitive candidate failure.
 pub(crate) const EXIT_FAILED: u8 = 2;
-/// Exit code for a search wound down by an interrupt, matching the shell
-/// convention for death by SIGINT.
+/// Exit code for a search wound down by a terminating signal.
 pub(crate) const EXIT_INTERRUPTED: u8 = 130;
 /// Exit code for everything else that is not success: infrastructure
 /// fault, config error, usage error.
@@ -110,7 +109,7 @@ fn main() -> ExitCode {
         && let [verb, config, ..] = args[..]
         && STORE_OPENING_VERBS.contains(&verb)
     {
-        warn_on_loose_objects(&resolve_config(config), verb);
+        warn_on_loose_objects(&resolve_config(config));
     }
     if host.is_none()
         && let Some((config, action, fetch_to)) = exec_form(&args)
@@ -456,10 +455,10 @@ fn resolve_config(arg: &str) -> PathBuf {
 }
 
 /// `sima search <config.toml> [--fleet] [--accept-binary]`: loads, prints the search
-/// id, orchestrates with progress rendering and the SIGINT flag installed, and
-/// maps the outcome to the exit code. `engagement` is what the invocation asked
-/// for: this machine alone, or this machine and the fleet. `accept` is what it
-/// asked for about a program whose build changed under the search.
+/// id, orchestrates with progress rendering and the interrupt flag installed,
+/// and maps the outcome to the exit code. `engagement` is what the invocation
+/// asked for: this machine alone, or this machine and the fleet. `accept` is
+/// what it asked for about a program whose build changed under the search.
 fn search_command(
     config: &Path,
     engagement: Engagement,
@@ -1032,14 +1031,9 @@ fn searches_command(store: &Path) -> ExitCode {
 /// cannot be measured says nothing here, because the command itself is
 /// about to report whatever is wrong with far better context. A store that
 /// does not exist yet is left alone rather than opened, since opening one
-/// creates it and the query commands are read-only about that. `verb` selects
-/// the config contract, so an exec warning resolves no search program.
-fn warn_on_loose_objects(config: &Path, verb: &str) {
-    let store_path = match if verb == "exec" {
-        load_exec(config).map(|loaded| loaded.store)
-    } else {
-        load(config).map(|loaded| loaded.store)
-    } {
+/// creates it and the query commands are read-only about that.
+fn warn_on_loose_objects(config: &Path) {
+    let store_path = match load_store(config) {
         Ok(store) => store,
         Err(_) => return,
     };
@@ -1069,7 +1063,7 @@ pub(crate) fn report(error: Error) -> ExitCode {
 /// Wraps a signal-registration failure: an OS-level refusal to install
 /// the handler, surfaced before the search starts.
 fn register_error(e: std::io::Error) -> Error {
-    Error::System(format!("cannot register the SIGINT handler: {e}"))
+    Error::System(format!("cannot register a terminating signal handler: {e}"))
 }
 
 /// The exit code a finished search maps to — the mapping `search` and `tui` share:
@@ -1098,21 +1092,34 @@ pub(crate) fn state_exit_code(state: &SearchState) -> u8 {
     }
 }
 
-/// Registers the SIGINT flag every long-running command winds down on.
+/// Registers the SIGINT, SIGTERM, and SIGHUP flag every long-running command
+/// winds down on.
 ///
-/// Registered before any output, so Ctrl-C is graceful from the first line on;
-/// a second Ctrl-C falls through to the default death, which is safe because
-/// that is exactly the crash the recovery guarantees cover. Both registrations
-/// are needed and in this order: the conditional default is what lets the
-/// second signal kill, and it must be in place before the flag that swallows
-/// the first.
+/// Registered before any output, so a terminating signal is graceful from the
+/// first line on. A later terminating signal falls through to the default death,
+/// which is safe because that is exactly the crash the recovery guarantees
+/// cover.
 pub(crate) fn register_interrupt() -> Result<Arc<AtomicBool>> {
     let interrupt = Arc::new(AtomicBool::new(false));
-    signal_hook::flag::register_conditional_default(signal_hook::consts::SIGINT, interrupt.clone())
-        .map_err(register_error)?;
-    signal_hook::flag::register(signal_hook::consts::SIGINT, interrupt.clone())
-        .map_err(register_error)?;
+    for signal in [
+        signal_hook::consts::SIGINT,
+        signal_hook::consts::SIGTERM,
+        signal_hook::consts::SIGHUP,
+    ] {
+        register_terminating_signal(signal, &interrupt)?;
+    }
     Ok(interrupt)
+}
+
+/// Makes `signal` set `interrupt` initially and use its default disposition once
+/// another terminating signal has set the shared flag.
+fn register_terminating_signal(signal: i32, interrupt: &Arc<AtomicBool>) -> Result<()> {
+    // The conditional default must precede the flag handler: it observes the
+    // first signal's flag when the same signal arrives again.
+    signal_hook::flag::register_conditional_default(signal, Arc::clone(interrupt))
+        .map_err(register_error)?;
+    signal_hook::flag::register(signal, Arc::clone(interrupt)).map_err(register_error)?;
+    Ok(())
 }
 
 #[cfg(test)]

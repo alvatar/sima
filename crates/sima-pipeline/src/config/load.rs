@@ -237,6 +237,15 @@ pub fn load_exec(path: &Path) -> Result<ExecConfig> {
     })
 }
 
+/// Resolves the shared store setting from any command config at `path`.
+/// Verb-specific sections are parsed but are not required or translated.
+pub fn load_store(path: &Path) -> Result<PathBuf> {
+    let text = fs_read(path)?;
+    let file: FileConfig =
+        toml::from_str(&text).map_err(|e| Error::Validation(format!("{}: {e}", path.display())))?;
+    Ok(resolve_store(path, file.config.as_ref()))
+}
+
 /// Requires one verb-specific top-level section with a direct message instead
 /// of exposing serde's structural representation.
 fn required_section<T>(path: &Path, name: &str, section: Option<T>) -> Result<T> {
@@ -997,6 +1006,23 @@ mod tests {
                 "a config missing {required:?} must be rejected"
             );
         }
+    }
+
+    #[test]
+    fn a_search_config_missing_max_attempts_names_the_file_and_key() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = write_config(
+            dir.path(),
+            "missing-attempts.toml",
+            &BASE.replace("        max_attempts = 3\n", ""),
+        );
+        let Err(Error::Validation(message)) = load(&path) else {
+            panic!("missing max_attempts must be a validation error");
+        };
+        assert_eq!(
+            message,
+            format!("{}: [config] max_attempts is required", path.display())
+        );
     }
 
     #[test]
@@ -2877,6 +2903,33 @@ mod tests {
             .to_string();
         assert!(message.contains("[search]"), "{message}");
         Ok(())
+    }
+
+    #[test]
+    fn store_load_accepts_each_command_config_and_its_shared_override() -> Result<()> {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let exec = exec_config(dir.path(), "");
+        assert_eq!(load_store(&exec)?, dir.path().join(".sima/store"));
+
+        let text = fs::read_to_string(&exec).expect("read exec config");
+        fs::write(&exec, format!("{text}\n[config]\nstore = \"s\"\n"))
+            .expect("add the shared store setting");
+        assert_eq!(load_store(&exec)?, dir.path().join("s"));
+        assert_eq!(load_exec(&exec)?.store, dir.path().join("s"));
+
+        let search = write_config(dir.path(), "search.toml", BASE);
+        assert_eq!(load_store(&search)?, load(&search)?.store);
+        Ok(())
+    }
+
+    #[test]
+    fn store_load_names_an_unparsable_file() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = write_config(dir.path(), "broken.toml", "not = [toml");
+        let message = load_store(&path)
+            .expect_err("invalid TOML must fail")
+            .to_string();
+        assert!(message.contains(&path.display().to_string()), "{message}");
     }
 
     #[test]

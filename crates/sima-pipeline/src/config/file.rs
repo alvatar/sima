@@ -126,7 +126,9 @@ pub(super) struct ConfigSection {
     /// absolute. Optional: a config that states none keeps its store under the
     /// generated directory beside it.
     pub(super) store: Option<String>,
-    pub(super) max_attempts: u32,
+    /// Search-only. Search loading requires it; other commands only read the
+    /// settings they use from this shared section.
+    pub(super) max_attempts: Option<u32>,
     pub(super) attempt_timeout_ms: Option<u64>,
     pub(super) answer_timeout_ms: Option<u64>,
     pub(super) checkpoint_interval_ms: Option<u64>,

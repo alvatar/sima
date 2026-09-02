@@ -1,0 +1,29 @@
+# A prebuilt Vulkan program on a rented RTX card. Payload layout:
+#   payload/bin/<program>      built with cargo zigbuild for glibc 2.35
+#   payload/scenes/...         its inputs
+# The install script installs what the program needs and gates on the GPU.
+[exec]
+host = "gpubox"
+command = "./bin/program render --scene scenes/demo --out out && ls -la out"
+payload = "payload"
+install = "install.sh"
+outputs = ["out/*"]
+fetch_to = "fetched"
+
+[host.gpubox]
+provider = "vast"
+image = "nvidia/cuda:12.8.1-base-ubuntu24.04"
+bootstrap_sima = true
+env = { NVIDIA_DRIVER_CAPABILITIES = "all" }
+
+[host.gpubox.constraints]
+gpu_models = ["RTX"]
+min_cuda = 12.8
+verified_only = true
+min_reliability = 0.98
+min_bandwidth_mbps = 200
+max_price_usd_hour = 0.40
+
+[budget]
+max_spend_usd = 0.50
+max_wall_clock_ms = 900000

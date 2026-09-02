@@ -104,13 +104,22 @@ pub(crate) fn show(client: &VastClient, id: &str, operation: &str) -> Result<Sho
     })
 }
 
-/// The state the API reports for `id`. A pending row is an instance still
-/// coming up: only the 404 of an instance the account does not hold reads
-/// as gone, and readiness polling bounds how long pending may last.
+/// The state the API reports for `id`.
+///
+/// A null row has two meanings: the row may still be materializing after
+/// creation, or the instance may have been destroyed. The account listing
+/// distinguishes them because it carries the id while the rental exists.
 pub(crate) fn status(client: &VastClient, id: &InstanceId) -> Result<InstanceStatus> {
     match show(client, &id.0, SHOW_OPERATION)? {
         ShowAnswer::Row(row) => Ok(row.state()),
-        ShowAnswer::Pending => Ok(InstanceStatus::Provisioning),
+        ShowAnswer::Pending => {
+            let account_holds = held(client)?.iter().any(|instance| instance.id == *id);
+            Ok(if account_holds {
+                InstanceStatus::Provisioning
+            } else {
+                InstanceStatus::Gone
+            })
+        }
         ShowAnswer::Absent => Ok(InstanceStatus::Gone),
     }
 }
@@ -278,15 +287,48 @@ mod tests {
     }
 
     #[test]
-    fn a_pending_row_is_provisioning() -> Result<()> {
-        // The API answers a null row in the window right after a rental is
-        // created, before it materializes the read. Only a 404 reads as
-        // gone: a pending row taken for gone would record an incident
-        // against a healthy machine and churn its instance.
-        let server = TestServer::new(vec![answer(200, r#"{"instances": null}"#)]);
+    fn a_pending_row_held_by_the_account_is_provisioning() -> Result<()> {
+        let server = TestServer::new(vec![
+            answer(200, r#"{"instances": null}"#),
+            answer(
+                200,
+                r#"{"instances": [{"id": 555, "label": "sima-tag-0",
+                    "dph_total": 0.412}], "next_token": null}"#,
+            ),
+        ]);
         let client = VastClient::new(&server.url(), "k-secret");
         assert_eq!(status(&client, &instance())?, InstanceStatus::Provisioning);
+        assert_eq!(server.requests().len(), 2);
         Ok(())
+    }
+
+    #[test]
+    fn a_pending_row_absent_from_the_account_listing_is_gone() -> Result<()> {
+        let server = TestServer::new(vec![
+            answer(200, r#"{"instances": null}"#),
+            answer(
+                200,
+                r#"{"instances": [{"id": 777, "label": "sima-tag-1",
+                    "dph_total": 0.2}], "next_token": null}"#,
+            ),
+        ]);
+        let client = VastClient::new(&server.url(), "k-secret");
+        assert_eq!(status(&client, &instance())?, InstanceStatus::Gone);
+        Ok(())
+    }
+
+    #[test]
+    fn a_failing_listing_for_a_pending_row_reaches_the_caller() {
+        let server = TestServer::new(vec![
+            answer(200, r#"{"instances": null}"#),
+            answer(500, r#"{"success": false, "error": "listing_failed"}"#),
+        ]);
+        let client = VastClient::new(&server.url(), "k-secret");
+        assert!(matches!(
+            status(&client, &instance()),
+            Err(Error::Provider(message))
+                if message == "list instances: HTTP 500: listing_failed"
+        ));
     }
 
     #[test]

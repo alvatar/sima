@@ -33,14 +33,12 @@ pub(crate) enum Probe {
 /// failure after the route answered. Exit 255 is ssh's own status and means
 /// unreachable only when ssh is in `argv`, so callers pass ssh argv only.
 pub(crate) fn ssh_contact(argv: &[String], label: &str) -> Result<Probe> {
-    let status = command_status(argv)?;
+    let (status, said) = command_report(argv)?;
     if status.success() {
         return Ok(Probe::Answered);
     }
     if status.code() == Some(SSH_UNREACHABLE) {
-        return Ok(Probe::Unreachable(Error::Transport(format!(
-            "cannot reach {label}: ssh exited with {status}"
-        ))));
+        return Ok(Probe::Unreachable(unreachable(label, status, &said)));
     }
     Err(Error::Transport(format!(
         "command on {label} exited with {status}"
@@ -70,7 +68,16 @@ pub(crate) enum ImageCheck {
 /// out the second.
 pub(crate) fn bootstrap_image(host: Option<&str>, container: &Container) -> Result<ImageCheck> {
     let argv = image_inspect_argv(host, &container.runtime, &container.image);
-    let status = command_status(&argv)?;
+    bootstrap_image_with_argv(host, container, &argv)
+}
+
+/// Runs an image-presence probe using the supplied command arguments.
+fn bootstrap_image_with_argv(
+    host: Option<&str>,
+    container: &Container,
+    argv: &[String],
+) -> Result<ImageCheck> {
+    let (status, said) = command_report(argv)?;
     if status.success() {
         return Ok(ImageCheck::Present);
     }
@@ -80,9 +87,11 @@ pub(crate) fn bootstrap_image(host: Option<&str>, container: &Container) -> Resu
     if let Some(host) = host
         && status.code() == Some(SSH_UNREACHABLE)
     {
-        return Ok(ImageCheck::Unreachable(Error::Transport(format!(
-            "cannot reach {host:?}: ssh exited with {status}"
-        ))));
+        return Ok(ImageCheck::Unreachable(unreachable(
+            &format!("{host:?}"),
+            status,
+            &said,
+        )));
     }
     let (place, fix) = match host {
         Some(host) => (
@@ -106,16 +115,35 @@ pub(crate) fn bootstrap_image(host: Option<&str>, container: &Container) -> Resu
     )))
 }
 
-/// Runs `argv`, discarding its streams, and reports whether it exited zero.
-fn command_status(argv: &[String]) -> Result<ExitStatus> {
+/// Reports an unreachable SSH endpoint using its last diagnostic line.
+fn unreachable(label: &str, status: ExitStatus, said: &str) -> Error {
+    let last = said
+        .lines()
+        .rev()
+        .find(|line| !line.trim().is_empty())
+        .map(str::trim)
+        .map_or_else(|| format!("ssh exited with {status}"), str::to_string);
+    Error::Transport(format!("cannot reach {label}: {last}"))
+}
+
+/// Runs a silent status probe and returns its exit status and trimmed stderr.
+///
+/// Stderr is captured rather than inherited because the caller polls the
+/// probe. This keeps intermediate failures silent while retaining what the far
+/// side said for the error returned when the probe stops.
+fn command_report(argv: &[String]) -> Result<(ExitStatus, String)> {
     let (program, args) = argv.split_first().expect("a non-empty command vector");
-    own_process_group(&mut Command::new(program))
+    let output = own_process_group(&mut Command::new(program))
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map_err(|e| Error::Transport(format!("running {program:?} failed: {e}")))
+        .stderr(Stdio::piped())
+        .output()
+        .map_err(|e| Error::Transport(format!("running {program:?} failed: {e}")))?;
+    Ok((
+        output.status,
+        String::from_utf8_lossy(&output.stderr).trim().to_string(),
+    ))
 }
 
 /// Runs `argv` and returns its stdout, or an error if it fails or its output
@@ -195,6 +223,14 @@ pub(crate) fn worker_binary() -> Result<PathBuf> {
 mod tests {
     use super::*;
 
+    fn container(runtime: &str) -> Container {
+        Container {
+            image: "worker-image".to_string(),
+            runtime: runtime.to_string(),
+            run_args: Vec::new(),
+        }
+    }
+
     #[test]
     fn ssh_contact_distinguishes_an_unreachable_route() {
         let probe = ssh_contact(
@@ -212,6 +248,59 @@ mod tests {
         assert_eq!(
             error.to_string(),
             "worker transport error: cannot reach test host: ssh exited with exit status: 255"
+        );
+    }
+
+    #[test]
+    fn ssh_contact_reports_the_last_diagnostic_from_an_unreachable_route() {
+        let probe = ssh_contact(
+            &[
+                "/bin/sh".to_string(),
+                "-c".to_string(),
+                "echo 'banner line' >&2; echo 'Permission denied (publickey).' >&2; exit 255"
+                    .to_string(),
+            ],
+            "test host",
+        )
+        .expect("the unreachable route is a probe outcome");
+        let Probe::Unreachable(error) = probe else {
+            panic!("exit 255 must be unreachable");
+        };
+        assert_eq!(
+            error.to_string(),
+            "worker transport error: cannot reach test host: Permission denied (publickey)."
+        );
+    }
+
+    #[test]
+    fn ssh_contact_ignores_blank_lines_after_the_last_diagnostic() {
+        let probe = ssh_contact(
+            &[
+                "/bin/sh".to_string(),
+                "-c".to_string(),
+                "printf 'Connection refused\\n\\n' >&2; exit 255".to_string(),
+            ],
+            "test host",
+        )
+        .expect("the unreachable route is a probe outcome");
+        let Probe::Unreachable(error) = probe else {
+            panic!("exit 255 must be unreachable");
+        };
+        assert_eq!(
+            error.to_string(),
+            "worker transport error: cannot reach test host: Connection refused"
+        );
+    }
+
+    #[test]
+    fn an_unreachable_route_uses_the_last_non_empty_line() {
+        let status = Command::new("/bin/sh")
+            .args(["-c", "exit 255"])
+            .status()
+            .expect("run the status fixture");
+        assert_eq!(
+            unreachable("h", status, "a\nb\n").to_string(),
+            "worker transport error: cannot reach h: b"
         );
     }
 
@@ -234,7 +323,51 @@ mod tests {
             "test host",
         )
         .expect_err("a remote failure is not an unreachable route");
-        assert!(error.to_string().contains("exit status: 3"), "{error}");
+        assert_eq!(
+            error.to_string(),
+            "worker transport error: command on test host exited with exit status: 3"
+        );
+    }
+
+    #[test]
+    fn a_local_runtime_exiting_255_still_reports_the_missing_image() {
+        let error = match bootstrap_image_with_argv(
+            None,
+            &container("podman"),
+            &[
+                "/bin/sh".to_string(),
+                "-c".to_string(),
+                "exit 255".to_string(),
+            ],
+        ) {
+            Err(error) => error,
+            Ok(_) => panic!("a local runtime failure must mean the image is absent"),
+        };
+        assert_eq!(
+            error.to_string(),
+            "validation error: worker image \"worker-image\" is not present locally; put it there with: podman build -t worker-image -f containers/sima/Containerfile ."
+        );
+    }
+
+    #[test]
+    fn a_remote_image_probe_reports_ssh_stderr() {
+        let check = bootstrap_image_with_argv(
+            Some("host"),
+            &container("runtime"),
+            &[
+                "/bin/sh".to_string(),
+                "-c".to_string(),
+                "echo 'Connection refused' >&2; exit 255".to_string(),
+            ],
+        )
+        .expect("an unreachable host is a probe outcome");
+        let ImageCheck::Unreachable(error) = check else {
+            panic!("exit 255 with a host must be unreachable");
+        };
+        assert_eq!(
+            error.to_string(),
+            "worker transport error: cannot reach \"host\": Connection refused"
+        );
     }
 
     #[test]
