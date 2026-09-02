@@ -237,9 +237,13 @@ pub fn load_exec(path: &Path) -> Result<ExecConfig> {
     })
 }
 
-/// Resolves the store used by the config at `path`.
+/// Resolves the shared store setting from any command config at `path`.
+/// Verb-specific sections are parsed but are not required or translated.
 pub fn load_store(path: &Path) -> Result<PathBuf> {
-    Ok(load(path)?.store)
+    let text = fs_read(path)?;
+    let file: FileConfig =
+        toml::from_str(&text).map_err(|e| Error::Validation(format!("{}: {e}", path.display())))?;
+    Ok(resolve_store(path, file.config.as_ref()))
 }
 
 /// Requires one verb-specific top-level section with a direct message instead
@@ -2894,6 +2898,7 @@ mod tests {
         fs::write(&exec, format!("{text}\n[config]\nstore = \"s\"\n"))
             .expect("add the shared store setting");
         assert_eq!(load_store(&exec)?, dir.path().join("s"));
+        assert_eq!(load_exec(&exec)?.store, dir.path().join("s"));
 
         let search = write_config(dir.path(), "search.toml", BASE);
         assert_eq!(load_store(&search)?, load(&search)?.store);

@@ -55,6 +55,7 @@ mod timeline;
 pub use config::{
     Container, ExecConfig, Fleet, Host, HostClass, HostClassForm, HostForm, LoadedConfig,
     Orchestrator, OwnedClass, OwnedHost, Pool, ProviderId, Rented, RentedClass, load, load_exec,
+    load_store,
 };
 pub use devices::DeviceSelector;
 pub use domain_registry::DomainRegistry;
