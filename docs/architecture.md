@@ -859,11 +859,11 @@ nothing to it — five methods over five endpoints:
 
 Three decisions shape it:
 
-- **The query narrows only to the backend's scope.** The search asks for
-  rentable machines rented on demand, and everything it answers is
-  normalized and handed up. Constraints and ranking stay in
-  [Selection](#selection), so what disqualifies an offer is one code path
-  across every backend.
+- **The query narrows the marketplace response.** The search asks for rentable
+  machines rented on demand and pushes the compatible hard constraints to the
+  endpoint. [Selection](#selection) reapplies every constraint locally and
+  remains authoritative, including model substring matching and ledger-derived
+  exclusions, then ranks what qualifies.
 - **The API key is read from the environment.** Search configuration is
   content-addressed and identity-bearing, so a key placed there would enter
   search hashes and the store. The backend reads `VAST_API_KEY` at
