@@ -230,9 +230,12 @@ fn run(
     finish_guard(guard, options.action, session)
 }
 
+/// How the first contact wait ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Reached {
+    /// The machine answered at the transport boundary.
     Answered,
+    /// The operator ended the wait before the machine answered.
     Interrupted,
 }
 
@@ -246,6 +249,8 @@ fn contact_within(
 ) -> Result<Reached> {
     let mut narrated = false;
     loop {
+        // A provider reports ready when its container is running, before the
+        // route necessarily accepts ssh, so the first connections may refuse.
         match far.contact()? {
             Probe::Answered => return Ok(Reached::Answered),
             Probe::Unreachable(error) => {
@@ -261,6 +266,10 @@ fn contact_within(
             ));
             narrated = true;
         }
+        // Only first contact retries. Every later operation runs against a
+        // machine that has answered, so its failure is authoritative.
+        // Read the interrupt after this refusal and before sleeping so the
+        // operator can end the wait without one more poll delay.
         if interrupt.load(Ordering::Relaxed) {
             return Ok(Reached::Interrupted);
         }
