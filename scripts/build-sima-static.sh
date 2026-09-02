@@ -7,10 +7,18 @@ if (( $# != 0 )); then
     exit 2
 fi
 
-if ! command -v x86_64-linux-musl-gcc >/dev/null 2>&1; then
-    echo "x86_64-linux-musl-gcc is required; install musl on Arch or musl-tools on Debian" >&2
+musl_cc=""
+for candidate in x86_64-linux-musl-gcc musl-gcc; do
+    if command -v "$candidate" >/dev/null 2>&1; then
+        musl_cc="$(command -v "$candidate")"
+        break
+    fi
+done
+if [[ -z "$musl_cc" ]]; then
+    echo "x86_64-linux-musl-gcc or musl-gcc is required; install musl on Arch or musl-tools on Debian" >&2
     exit 1
 fi
+export CC_x86_64_unknown_linux_musl="$musl_cc"
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$root"
