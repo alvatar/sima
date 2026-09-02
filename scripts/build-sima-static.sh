@@ -31,10 +31,9 @@ fi
 cargo build --release --target "$target" -p sima
 
 built="target/$target/release/sima"
-ldd_output="$(ldd "$built" 2>&1)" && ldd_status=0 || ldd_status=$?
-# ldd distinguishes static executables from static PIEs by message and status.
-if ! { (( ldd_status != 0 )) && [[ "$ldd_output" == *"not a dynamic executable"* ]]; } \
-    && ! { (( ldd_status == 0 )) && [[ "$ldd_output" == *"statically linked"* ]]; }; then
+ldd_output="$(ldd "$built" 2>&1 || true)"
+# ldd emits "not a dynamic executable" for a static executable and "statically linked" for a static PIE.
+if [[ "$ldd_output" != *"not a dynamic executable"* && "$ldd_output" != *"statically linked"* ]]; then
     echo "expected $built to be static; ldd reported: $ldd_output" >&2
     exit 1
 fi
